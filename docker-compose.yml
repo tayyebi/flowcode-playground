@@ -1,0 +1,69 @@
+# FlowCode Playground — runs the published image from GHCR.
+#
+#   docker compose up -d     →  http://localhost:8080
+#
+# To build from source instead of pulling, layer the build override on top:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+
+services:
+  playground:
+    image: ghcr.io/tayyebi/flowcode-playground:latest
+    container_name: flowcode-playground
+    pull_policy: always
+    restart: unless-stopped
+
+    ports:
+      - "${PLAYGROUND_PORT:-8080}:8080"
+
+    environment:
+      # How long a single compile or run may take before it is killed. The VM
+      # has no instruction budget, so this is what stops a runaway workflow.
+      PLAYGROUND_TIMEOUT: "${PLAYGROUND_TIMEOUT:-5s}"
+      # Concurrent compile+run slots. Requests past this wait, then get a 503.
+      PLAYGROUND_MAX_CONCURRENT: "${PLAYGROUND_MAX_CONCURRENT:-4}"
+      PLAYGROUND_RATE_PER_MINUTE: "${PLAYGROUND_RATE_PER_MINUTE:-30}"
+      PLAYGROUND_RATE_BURST: "${PLAYGROUND_RATE_BURST:-10}"
+      # Set to 1 only when a reverse proxy you control sets X-Forwarded-For.
+      # Otherwise any client can forge the header and get its own rate bucket.
+      TRUST_PROXY: "${TRUST_PROXY:-0}"
+
+    # --- Containment -------------------------------------------------------
+    # This service compiles and executes code submitted by strangers. The
+    # runtime itself is well behaved — flowcode's builtin plugins do no I/O and
+    # the CLI cannot load the `os` plugin that would — but the container is
+    # locked down anyway, because "the interpreter is safe" is a claim that
+    # should never be the only thing standing between the internet and a host.
+    read_only: true
+    tmpfs:
+      # Per-run scratch space. noexec matters: the playground writes .fc source
+      # and .fcb bytecode here and never executes from this mount, so anything
+      # that tries to is doing something we did not intend.
+      #
+      # uid/gid must match the `play` user the image creates (both 10001). This
+      # mount replaces the directory baked into the image, so without them the
+      # tmpfs arrives owned by root and every run fails to create its work dir.
+      - /run/play:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    pids_limit: 128
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 1024
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

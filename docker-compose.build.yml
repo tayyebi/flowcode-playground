@@ -1,0 +1,21 @@
+# Build override: compile the image locally instead of pulling it from GHCR.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+#
+# Point the build at a specific upstream revision with FLOWCODE_REF, which takes
+# any tag, branch, or commit SHA:
+#
+#   FLOWCODE_REF=v0.1.0 docker compose -f docker-compose.yml \
+#       -f docker-compose.build.yml up --build
+
+services:
+  playground:
+    build:
+      context: .
+      args:
+        FLOWCODE_REPO: "${FLOWCODE_REPO:-https://github.com/tayyebi/flowcode.git}"
+        FLOWCODE_REF: "${FLOWCODE_REF:-main}"
+    image: flowcode-playground:local
+    # The base file pins `pull_policy: always`, which would try to fetch the
+    # locally-built tag from a registry and fail.
+    pull_policy: build

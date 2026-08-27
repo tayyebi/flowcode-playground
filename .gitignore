@@ -1,0 +1,12 @@
+# Frontend
+web/node_modules/
+web/dist/
+
+# Go build output. `go build ./...` names the binary after the directory, and
+# `go build -o playground` is what the Dockerfile and README use.
+server/server
+server/playground
+
+# Local environment overrides
+.env
+.env.local

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FlowCode Playground</title>
+    <meta
+      name="description"
+      content="Write, compile, and run FlowCode workflows in the browser."
+    />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9193;</text></svg>" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <h1>FlowCode Playground</h1>
+      </div>
+
+      <div class="controls">
+        <label class="sample-picker">
+          <span class="sr-only">Load a sample</span>
+          <select id="sample-select" aria-label="Load a sample">
+            <option value="">Load a sample…</option>
+          </select>
+        </label>
+        <button id="share" type="button" class="btn btn-secondary">Copy link</button>
+        <button id="run" type="button" class="btn btn-primary">
+          Run <kbd>⌘↵</kbd>
+        </button>
+      </div>
+    </header>
+
+    <p id="sample-description" class="sample-description" hidden></p>
+
+    <main class="workspace">
+      <section class="pane pane-editor" aria-label="Editor">
+        <div id="editor"></div>
+      </section>
+
+      <section class="pane pane-results" aria-label="Results">
+        <div class="tabs" role="tablist">
+          <button role="tab" class="tab" data-tab="trace" aria-selected="true" id="tab-trace">
+            Trace
+          </button>
+          <button role="tab" class="tab" data-tab="bytecode" aria-selected="false" id="tab-bytecode">
+            Bytecode
+          </button>
+          <button role="tab" class="tab" data-tab="diagnostics" aria-selected="false" id="tab-diagnostics">
+            Diagnostics <span class="badge" id="diagnostics-badge" hidden>0</span>
+          </button>
+        </div>
+
+        <div class="panels">
+          <div class="panel" id="panel-trace" role="tabpanel" aria-labelledby="tab-trace"></div>
+          <div class="panel" id="panel-bytecode" role="tabpanel" aria-labelledby="tab-bytecode" hidden></div>
+          <div class="panel" id="panel-diagnostics" role="tabpanel" aria-labelledby="tab-diagnostics" hidden></div>
+        </div>
+
+        <div class="statusbar" id="status" role="status" aria-live="polite">Ready.</div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

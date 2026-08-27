@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          # The server has no module dependencies, so there is no go.sum for
+          # the cache to key on and nothing worth caching.
+          cache: false
+
+      - name: Vet
+        working-directory: server
+        run: go vet ./...
+
+      - name: Check formatting
+        working-directory: server
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      # Build the real toolchain so the end-to-end tests actually run rather
+      # than skipping. A green CI that silently skipped them would be worse
+      # than no CI at all.
+      - name: Build FlowCode and the trace driver
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/tayyebi/flowcode.git /tmp/flowcode
+          make -C /tmp/flowcode
+          SOURCES="$(ls /tmp/flowcode/src/*.c | grep -Ev '/(cli|compiler)\.c$')"
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -O2 -I/tmp/flowcode/include \
+             -o /tmp/fcplay $SOURCES runner/fcplay.c -ldl
+
+      - name: Test
+        working-directory: server
+        env:
+          FLOWCODE_FCC: /tmp/flowcode/fcc
+          FLOWCODE_RUNNER: /tmp/fcplay
+          FLOWCODE_SAMPLES_DIR: /tmp/flowcode/samples
+        run: go test -race ./...
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+  image:
+    name: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build without pushing, so a broken Dockerfile is caught on the PR
+      # rather than on the release that follows it.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: flowcode-playground:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A built image that cannot serve a request is not a passing build. The
+      # containment flags here mirror docker-compose.yml exactly, because that
+      # is where ownership and mount-option mistakes actually surface — a
+      # container run without them will happily hide a broken tmpfs.
+      - name: Start the image
+        run: |
+          set -eux
+          docker run -d --name smoke -p 8080:8080 \
+            --read-only \
+            --tmpfs /run/play:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001 \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL \
+            --pids-limit 128 \
+            --memory 512m \
+            flowcode-playground:ci
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz; then break; fi
+            sleep 1
+          done
+
+      - name: Smoke test
+        run: python3 scripts/smoke.py http://localhost:8080
+
+      # The compose file is a deliverable; a syntax error in it should fail here
+      # rather than on someone's machine.
+      - name: Validate compose files
+        run: |
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker-compose.yml -f docker-compose.build.yml config >/dev/null
+
+      - name: Container logs
+        if: always()
+        run: docker logs smoke || true
