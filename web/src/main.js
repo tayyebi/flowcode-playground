@@ -6,6 +6,8 @@ import { linter, lintGutter, setDiagnostics } from "@codemirror/lint";
 
 import { flowcodeLanguage, flowcodeHighlighting } from "./flowcode-lang.js";
 import { encodeSource, decodeFragment } from "./share.js";
+import { renderDiagnosticsList, renderBytecode, renderTrace, statusFromResult, note } from "./render-result.js";
+import { initRouter } from "./router.js";
 import "./style.css";
 
 const STARTER = `workflow: HelloWorld
@@ -21,6 +23,8 @@ step saved:
         value = greeting
 end
 `;
+
+const playgroundRoot = document.getElementById("view-playground");
 
 const el = {
   editor: document.getElementById("editor"),
@@ -155,9 +159,10 @@ async function runProgram() {
 
 function render(result) {
   renderDiagnostics(result.compile.diagnostics ?? [], result.compile);
-  renderBytecode(result);
-  renderTrace(result);
-  setStatusFromResult(result);
+  renderBytecode(el.panels.bytecode, result);
+  renderTrace(el.panels.trace, result);
+  const { message, kind } = statusFromResult(result);
+  setStatus(message, kind);
 
   // Send the user where the news is: a failed compile makes Diagnostics the
   // only pane that explains anything, so switching there beats leaving them
@@ -169,147 +174,8 @@ function render(result) {
   }
 }
 
-function renderTrace(result) {
-  const panel = el.panels.trace;
-  panel.innerHTML = "";
-
-  if (result.compile.exitCode !== 0) {
-    panel.append(
-      note("Compilation failed, so nothing was executed. See the Diagnostics tab.", "warn"),
-    );
-    return;
-  }
-
-  const run = result.run;
-  if (!run) {
-    panel.append(note("The program was not executed.", "warn"));
-    return;
-  }
-
-  if (run.timedOut) {
-    panel.append(
-      note(
-        "The program was stopped after exceeding the time limit. FlowCode's VM has no " +
-          "instruction budget, so a workflow that jumps backwards runs forever.",
-        "error",
-      ),
-    );
-  }
-
-  const trace = run.stderr || run.stdout;
-  if (trace) {
-    panel.append(traceBlock(trace));
-  } else if (!run.timedOut) {
-    panel.append(note("The program produced no output.", "muted"));
-  }
-
-  if (run.error) {
-    panel.append(note(run.error, "error"));
-  }
-  if (result.truncated) {
-    panel.append(note("Output was truncated at 64 KB.", "muted"));
-  }
-}
-
-// The runtime tags every line `[flowcode:LEVEL]`; splitting that off lets the
-// levels be colour-coded and keeps the message column aligned.
-const TRACE_LINE = /^\[flowcode:(DEBUG|INFO|WARN|ERROR)\]\s*(.*)$/;
-
-function traceBlock(text) {
-  const pre = document.createElement("pre");
-  pre.className = "trace";
-
-  for (const raw of text.replace(/\n$/, "").split("\n")) {
-    const line = document.createElement("div");
-    line.className = "trace-line";
-
-    const match = TRACE_LINE.exec(raw);
-    if (match) {
-      const [, level, message] = match;
-      const tag = document.createElement("span");
-      tag.className = `trace-level trace-level-${level.toLowerCase()}`;
-      tag.textContent = level;
-      line.append(tag, document.createTextNode(message));
-    } else {
-      line.classList.add("trace-line-plain");
-      line.textContent = raw;
-    }
-    pre.append(line);
-  }
-  return pre;
-}
-
-function renderBytecode(result) {
-  const panel = el.panels.bytecode;
-  panel.innerHTML = "";
-
-  if (result.bytecodeError) {
-    panel.append(note(`Could not decode the bytecode: ${result.bytecodeError}`, "error"));
-    return;
-  }
-  const bc = result.bytecode;
-  if (!bc) {
-    panel.append(note("No bytecode was produced.", "muted"));
-    return;
-  }
-
-  const summary = document.createElement("p");
-  summary.className = "bytecode-summary";
-  summary.textContent =
-    `FCB v${bc.version} · ${bc.instructionCount} instruction${bc.instructionCount === 1 ? "" : "s"} · ` +
-    `${bc.argBlobSize} B arguments · ${bc.sizeBytes} B total`;
-  panel.append(summary);
-
-  const table = document.createElement("table");
-  table.className = "bytecode";
-  table.innerHTML =
-    "<thead><tr><th>#</th><th>Opcode</th><th>Argument</th><th>Offset</th><th>Len</th></tr></thead>";
-
-  const tbody = document.createElement("tbody");
-  for (const ins of bc.instructions) {
-    const tr = document.createElement("tr");
-    tr.id = `instr-${ins.index}`;
-
-    tr.append(
-      cell(String(ins.index), "num"),
-      cell(ins.opcode, `opcode opcode-${ins.opcode.toLowerCase()}`),
-    );
-
-    // ROUTE/LOOP arguments are jump targets; make them navigable rather than
-    // leaving the reader to scroll and count.
-    const argCell = document.createElement("td");
-    argCell.className = "arg";
-    if (ins.target !== undefined) {
-      const link = document.createElement("a");
-      link.href = `#instr-${ins.target}`;
-      link.textContent = ins.arg;
-      link.className = "jump";
-      link.addEventListener("click", (e) => {
-        e.preventDefault();
-        highlightInstruction(ins.target);
-      });
-      argCell.append(link);
-    } else {
-      argCell.textContent = ins.arg;
-    }
-    tr.append(argCell, cell(String(ins.argOffset), "num"), cell(String(ins.argLength), "num"));
-    tbody.append(tr);
-  }
-
-  table.append(tbody);
-  panel.append(table);
-}
-
-function highlightInstruction(index) {
-  const row = document.getElementById(`instr-${index}`);
-  if (!row) return;
-  row.scrollIntoView({ behavior: "smooth", block: "center" });
-  row.classList.remove("flash");
-  // Force a reflow so the animation restarts when the same row is targeted twice.
-  void row.offsetWidth;
-  row.classList.add("flash");
-}
-
+// renderDiagnostics layers the editor-specific bits (inline gutter markers,
+// the tab badge) on top of the shared, editor-independent list rendering.
 function renderDiagnostics(diagnostics, compile) {
   currentDiagnostics = diagnostics.map((d) => {
     const line = view.state.doc.line(Math.min(Math.max(d.line, 1), view.state.doc.lines));
@@ -330,62 +196,7 @@ function renderDiagnostics(diagnostics, compile) {
     diagnostics.some((d) => d.level === "error"),
   );
 
-  const panel = el.panels.diagnostics;
-  panel.innerHTML = "";
-
-  if (badgeCount === 0) {
-    panel.append(
-      note(
-        compile.exitCode === 0
-          ? "No diagnostics — the program compiled cleanly."
-          : "The compiler reported no positioned diagnostics.",
-        compile.exitCode === 0 ? "ok" : "warn",
-      ),
-    );
-  } else {
-    const list = document.createElement("ul");
-    list.className = "diagnostics";
-    for (const d of diagnostics) {
-      const item = document.createElement("li");
-      item.className = `diagnostic diagnostic-${d.level}`;
-
-      const jump = document.createElement("button");
-      jump.type = "button";
-      jump.className = "diagnostic-line";
-      jump.textContent = `line ${d.line}`;
-      jump.addEventListener("click", () => gotoLine(d.line));
-
-      const level = document.createElement("span");
-      level.className = "diagnostic-level";
-      level.textContent = d.level;
-
-      const message = document.createElement("span");
-      message.className = "diagnostic-message";
-      message.textContent = d.message;
-
-      item.append(level, jump, message);
-      list.append(item);
-    }
-    panel.append(list);
-  }
-
-  // Unpositioned compiler output — "compilation completed with errors", file
-  // I/O failures — has nowhere else to go, and hiding it would leave some
-  // failures looking unexplained.
-  const extra = unpositionedLines(compile.stderr ?? "");
-  if (extra) {
-    const pre = document.createElement("pre");
-    pre.className = "raw-stderr";
-    pre.textContent = extra;
-    panel.append(pre);
-  }
-}
-
-function unpositionedLines(stderr) {
-  return stderr
-    .split("\n")
-    .filter((line) => line.trim() && !/^(error|warning): line \d+:/.test(line))
-    .join("\n");
+  renderDiagnosticsList(el.panels.diagnostics, diagnostics, compile, { onJumpToLine: gotoLine });
 }
 
 function gotoLine(lineNumber) {
@@ -396,37 +207,6 @@ function gotoLine(lineNumber) {
     effects: EditorView.scrollIntoView(line.from, { y: "center" }),
   });
   view.focus();
-}
-
-function setStatusFromResult(result) {
-  const { compile, run } = result;
-
-  if (compile.timedOut) {
-    setStatus("The compiler timed out.", "error");
-    return;
-  }
-  if (compile.exitCode !== 0) {
-    setStatus(`Compilation failed (exit ${compile.exitCode}).`, "error");
-    return;
-  }
-  if (!run) {
-    setStatus("Compiled, but the program was not executed.", "warn");
-    return;
-  }
-  if (run.timedOut) {
-    setStatus("Stopped: the program exceeded the time limit.", "error");
-    return;
-  }
-
-  const warnings = (compile.diagnostics ?? []).length;
-  const suffix = warnings > 0 ? ` · ${warnings} warning${warnings === 1 ? "" : "s"}` : "";
-  const timing = `compiled in ${compile.durationMs} ms, ran in ${run.durationMs} ms`;
-
-  if (run.exitCode !== 0) {
-    setStatus(`The workflow failed (exit ${run.exitCode}) · ${timing}${suffix}`, "error");
-  } else {
-    setStatus(`Finished · ${timing}${suffix}`, warnings > 0 ? "warn" : "ok");
-  }
 }
 
 function showRequestError(message) {
@@ -491,18 +271,18 @@ el.share.addEventListener("click", async () => {
 el.run.addEventListener("click", runProgram);
 
 function activeTab() {
-  return document.querySelector('.tab[aria-selected="true"]')?.dataset.tab ?? "trace";
+  return playgroundRoot.querySelector('.tab[aria-selected="true"]')?.dataset.tab ?? "trace";
 }
 
 function selectTab(name) {
-  for (const tab of document.querySelectorAll(".tab")) {
+  for (const tab of playgroundRoot.querySelectorAll(".tab")) {
     const selected = tab.dataset.tab === name;
     tab.setAttribute("aria-selected", String(selected));
     el.panels[tab.dataset.tab].hidden = !selected;
   }
 }
 
-for (const tab of document.querySelectorAll(".tab")) {
+for (const tab of playgroundRoot.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => selectTab(tab.dataset.tab));
 }
 
@@ -511,25 +291,17 @@ function setStatus(message, kind) {
   el.status.className = `statusbar${kind ? ` statusbar-${kind}` : ""}`;
 }
 
-function cell(text, className) {
-  const td = document.createElement("td");
-  td.className = className;
-  td.textContent = text;
-  return td;
-}
-
-function note(text, kind) {
-  const p = document.createElement("p");
-  p.className = `note note-${kind}`;
-  p.textContent = text;
-  return p;
-}
 
 /* ------------------------------------------------------------------ */
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
 
-(async function init() {
+let playgroundBooted = false;
+
+async function bootPlayground() {
+  if (playgroundBooted) return;
+  playgroundBooted = true;
+
   await loadSamples();
 
   const shared = await decodeFragment();
@@ -539,4 +311,10 @@ function note(text, kind) {
   }
 
   el.panels.trace.append(note("Press Run, or ⌘↵, to compile and execute.", "muted"));
-})();
+}
+
+initRouter({
+  playground: { mount: bootPlayground },
+  dashboard: { mount: (container) => import("./views/dashboard.js").then((m) => m.mount(container)) },
+  project: { mount: (container, route) => import("./views/project.js").then((m) => m.mount(container, route)) },
+});

@@ -580,3 +580,299 @@ ul.diagnostics {
 .cm-editor.cm-focused .cm-selectionBackground {
   background: color-mix(in srgb, var(--accent) 22%, transparent) !important;
 }
+
+/* -------------------------------------------------------------- Top nav */
+
+.topnav {
+  display: flex;
+  gap: 4px;
+  padding: 6px 16px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.topnav-link {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+}
+
+.topnav-link:hover {
+  color: var(--text);
+}
+
+.topnav-link.active {
+  color: var(--accent-text);
+  background: var(--accent);
+}
+
+/* -------------------------------------------------------------- Dashboard */
+
+#view-dashboard,
+#view-project {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.dash-header h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.dash-sub {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.dash-create {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.dash-create input {
+  font-family: inherit;
+  font-size: 13px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--text);
+  flex: 1;
+}
+
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-card {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.project-card-name {
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.project-card-name:hover {
+  color: var(--accent);
+}
+
+.project-card-meta,
+.project-card-updated {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-danger {
+  color: var(--error);
+}
+
+.btn-danger:hover {
+  border-color: var(--error);
+}
+
+/* -------------------------------------------------------------- Project */
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.back-link:hover {
+  color: var(--accent);
+}
+
+.project-header h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.project-desc {
+  margin: 0 0 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.project-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.project-toolbar .spacer {
+  flex: 1;
+}
+
+.save-state {
+  font-size: 12px;
+  color: var(--warn);
+}
+
+.project-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  min-height: 420px;
+}
+
+.project-workspace .pane-editor {
+  border-right: 1px solid var(--border);
+  min-height: 420px;
+}
+
+.project-workspace #project-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+.file-tabs {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  overflow-x: auto;
+}
+
+.file-tab {
+  appearance: none;
+  border: none;
+  background: none;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-muted);
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+
+.file-tab.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+@media (max-width: 860px) {
+  .project-workspace {
+    grid-template-columns: 1fr;
+  }
+  .project-workspace .pane-editor {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+/* --------------------------------------------------------- Manage panels */
+
+.project-manage {
+  margin-top: 24px;
+}
+
+.manage-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.manage-tab {
+  appearance: none;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.manage-tab.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+.manage-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.manage-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+}
+
+.manage-row-title {
+  font-weight: 600;
+  font-family: var(--mono);
+}
+
+.manage-row-meta {
+  flex: 1;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  margin-left: 6px;
+}

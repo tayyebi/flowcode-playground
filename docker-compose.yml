@@ -23,9 +23,18 @@ services:
       PLAYGROUND_MAX_CONCURRENT: "${PLAYGROUND_MAX_CONCURRENT:-4}"
       PLAYGROUND_RATE_PER_MINUTE: "${PLAYGROUND_RATE_PER_MINUTE:-30}"
       PLAYGROUND_RATE_BURST: "${PLAYGROUND_RATE_BURST:-10}"
+      # Separate budget for public /deploy/{slug} traffic, so it can't starve
+      # (or be starved by) the anonymous playground's own /api/run budget.
+      PLAYGROUND_DEPLOY_RATE_PER_MINUTE: "${PLAYGROUND_DEPLOY_RATE_PER_MINUTE:-60}"
+      PLAYGROUND_DEPLOY_RATE_BURST: "${PLAYGROUND_DEPLOY_RATE_BURST:-20}"
       # Set to 1 only when a reverse proxy you control sets X-Forwarded-For.
       # Otherwise any client can forge the header and get its own rate bucket.
       TRUST_PROXY: "${TRUST_PROXY:-0}"
+      # A single shared secret gating /api/projects... (saved projects,
+      # deployments, triggers, executions, kv). Leave unset for a fully open
+      # instance, same posture as before Projects existed. Never gates
+      # /api/run, /api/samples, /healthz, or a deployment's public URL.
+      PLAYGROUND_ADMIN_TOKEN: "${PLAYGROUND_ADMIN_TOKEN:-}"
 
     # --- Containment -------------------------------------------------------
     # This service compiles and executes code submitted by strangers. The
@@ -44,6 +53,13 @@ services:
       # tmpfs arrives owned by root and every run fails to create its work dir.
       - /run/play:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001
       - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001
+    volumes:
+      # Unlike /run/play and /tmp above, this holds the SQLite database and
+      # must survive restarts — a *persistent* named volume, not tmpfs. A
+      # named volume gets the image's chowned ownership (10001:10001)
+      # automatically on first creation; a bind-mounted host directory does
+      # not, and must be pre-chowned to 10001:10001 by hand.
+      - playground-data:/data
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -67,3 +83,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  playground-data:

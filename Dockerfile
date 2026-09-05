@@ -64,15 +64,16 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 3 — server
 # ---------------------------------------------------------------------------
-FROM golang:1.23-alpine AS server-build
+FROM golang:1.25-alpine AS server-build
 
 WORKDIR /src
-COPY server/go.mod ./
+COPY server/go.mod server/go.sum ./
 RUN go mod download
 
 COPY server/ ./
-# Static binary: nothing in the server needs cgo, and a dynamic one would tie
-# the runtime image's libc to the builder's.
+# Static binary: nothing in the server needs cgo — including
+# modernc.org/sqlite, a pure-Go SQLite driver transpiled from the C sources —
+# and a dynamic one would tie the runtime image's libc to the builder's.
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/playground .
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,12 @@ COPY --from=server-build   /out/playground          /usr/local/bin/playground
 # /run/play is where each submission gets its own scratch directory. Compose
 # mounts a tmpfs over it so the rest of the filesystem can stay read-only; the
 # ownership set here only applies when the image is run without that mount.
-RUN mkdir -p /run/play && chown play:play /run/play
+#
+# /data is different: it holds the SQLite database and must survive restarts,
+# so compose mounts a *persistent* named volume there instead of tmpfs. A
+# named volume gets this ownership automatically on first creation; a
+# bind-mounted host directory does not and must be pre-chowned to 10001:10001.
+RUN mkdir -p /run/play /data && chown play:play /run/play /data
 
 USER play
 WORKDIR /run/play
@@ -108,7 +114,8 @@ ENV PORT=8080 \
     FLOWCODE_RUNNER=/usr/local/bin/fcplay \
     FLOWCODE_SAMPLES_DIR=/opt/flowcode/samples \
     PLAYGROUND_WORKDIR=/run/play \
-    PLAYGROUND_WEB_ROOT=/srv/web
+    PLAYGROUND_WEB_ROOT=/srv/web \
+    PLAYGROUND_DB_PATH=/data/playground.db
 
 EXPOSE 8080
 

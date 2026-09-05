@@ -17,10 +17,9 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
-          # The server has no module dependencies, so there is no go.sum for
-          # the cache to key on and nothing worth caching.
-          cache: false
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: server/go.sum
 
       - name: Vet
         working-directory: server
@@ -107,6 +106,7 @@ jobs:
             --read-only \
             --tmpfs /run/play:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001 \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001 \
+            --tmpfs /data:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001 \
             --security-opt no-new-privileges:true \
             --cap-drop ALL \
             --pids-limit 128 \

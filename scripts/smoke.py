@@ -62,6 +62,29 @@ def get(base: str, path: str):
         return json.load(response)
 
 
+def request_json(base: str, method: str, path: str, body: dict | None = None):
+    """A generic JSON request, for the Projects API's CRUD-shaped routes.
+
+    Returns (status, parsed_body) for both success and HTTPError, the same
+    convention as post_run, so callers can assert on error responses too.
+    """
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        f"{base}{path}", data=data, method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            raw = response.read()
+            return response.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as err:
+        raw = err.read()
+        try:
+            return err.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return err.code, {"raw": raw.decode(errors="replace")}
+
+
 def main(base: str) -> int:
     failures: list[str] = []
 
@@ -121,6 +144,71 @@ def main(base: str) -> int:
 
     status, _ = post_run(base, "")
     check(status == 400, f"empty source is refused with 400 (got {status})")
+
+    print("projects")
+    # Probe first and skip gracefully: a deployed image built before Phase A
+    # (saved/versioned projects, deployments, triggers) won't have this route
+    # at all, and this script should stay useful against that image too.
+    probe_status, _ = request_json(base, "GET", "/api/projects")
+    if probe_status == 404:
+        print("  skip  /api/projects not present on this image (pre-Phase-A)")
+    else:
+        check(probe_status == 200, f"GET /api/projects ({probe_status})")
+
+        status, project = request_json(base, "POST", "/api/projects", {"name": "Smoke Test Project"})
+        check(status == 201, f"create project ({status})")
+        project_id = project["id"]
+
+        status, file = request_json(
+            base, "PUT", f"/api/projects/{project_id}/files/main.fc", {"content": HELLO},
+        )
+        check(status == 200 and file["content"] == HELLO, f"save file ({status})")
+
+        status, run = request_json(base, "POST", f"/api/projects/{project_id}/files/main.fc/run")
+        check(
+            status == 200 and run["compile"]["exitCode"] == 0 and run.get("run") is not None,
+            f"run file via the project engine, same shape as /api/run ({status})",
+        )
+
+        status, version = request_json(base, "POST", f"/api/projects/{project_id}/versions", {"label": "v1"})
+        check(status == 201 and version["number"] == 1, f"save version ({status})")
+
+        status, deployment = request_json(
+            base, "POST", f"/api/projects/{project_id}/deployments", {"fileName": "main.fc"},
+        )
+        check(status == 201, f"create deployment ({status})")
+
+        with urllib.request.urlopen(f"{base}/deploy/{deployment['slug']}") as response:
+            deploy_status = response.status
+            deploy_body = json.load(response)
+        check(
+            deploy_status == 200 and "note" in deploy_body,
+            f"deployment responds and states its Phase A limitation ({deploy_status})",
+        )
+
+        status, trigger = request_json(
+            base, "POST", f"/api/projects/{project_id}/triggers",
+            {"fileName": "main.fc", "scheduleType": "interval", "intervalSeconds": 1},
+        )
+        check(status == 201, f"create trigger ({status})")
+
+        # The scheduler ticks on its own cadence (~15s), independent of how
+        # short the trigger's own interval is, so give it a bounded window
+        # rather than sleeping for a fixed guess.
+        fired = False
+        for _ in range(20):
+            _, executions = request_json(base, "GET", f"/api/projects/{project_id}/executions")
+            if any(e["source"] == "trigger" for e in executions):
+                fired = True
+                break
+            time.sleep(2)
+        check(fired, "a short-interval trigger fires within the poll window")
+
+        status, _ = request_json(base, "GET", f"/api/projects/{project_id}/kv")
+        check(status == 200, f"kv store is reachable ({status})")
+
+        status, _ = request_json(base, "DELETE", f"/api/projects/{project_id}")
+        check(status == 204, f"delete project cleans up (cascades) ({status})")
 
     print("rate limiting")
     # Deliberately burst without backing off. Left until last, because it

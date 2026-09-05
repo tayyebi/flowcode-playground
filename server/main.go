@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,21 +14,26 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/tayyebi/flowcode-playground/server/internal/db"
+	"github.com/tayyebi/flowcode-playground/server/internal/engine"
+	"github.com/tayyebi/flowcode-playground/server/internal/scheduler"
+	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
 
 // Server holds the configuration and the state that outlives a request.
 type Server struct {
-	CompilerPath string // fcc
-	RunnerPath   string // fcplay, the tracing driver
-	WorkDir      string
-	WebRoot      string
-	Timeout      time.Duration
-	QueueWait    time.Duration
-	TrustProxy   bool
+	WebRoot    string
+	TrustProxy bool
+	AdminToken string
 
-	samples []Sample
-	slots   chan struct{} // bounded concurrency for compile+run
-	limiter *rateLimiter
+	samples       []Sample
+	engine        *engine.Engine
+	limiter       *rateLimiter
+	deployLimiter *rateLimiter
+	store         *store.Store
+	scheduler     *scheduler.Scheduler
+	sqlDB         *sql.DB
 }
 
 func main() {
@@ -41,6 +47,8 @@ func main() {
 	addr := ":" + env("PORT", "8080")
 	done := make(chan struct{})
 	go srv.limiter.run(done)
+	go srv.deployLimiter.run(done)
+	go srv.scheduler.Run(done)
 
 	httpServer := &http.Server{
 		Addr:    addr,
@@ -50,7 +58,7 @@ func main() {
 		// legitimately slow program would have its response cut off.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      srv.Timeout*2 + 15*time.Second,
+		WriteTimeout:      srv.engine.Timeout*2 + 15*time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
@@ -61,7 +69,7 @@ func main() {
 
 	go func() {
 		log.Printf("flowcode playground listening on %s (%d samples, timeout %s)",
-			addr, len(srv.samples), srv.Timeout)
+			addr, len(srv.samples), srv.engine.Timeout)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}
@@ -75,6 +83,9 @@ func main() {
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
+	}
+	if err := srv.sqlDB.Close(); err != nil {
+		log.Printf("closing database: %v", err)
 	}
 }
 
@@ -96,29 +107,60 @@ func newServerFromEnv() (*Server, error) {
 		return nil, errors.New("PLAYGROUND_RATE_BURST must be a positive integer")
 	}
 
-	s := &Server{
-		CompilerPath: env("FLOWCODE_FCC", "/usr/local/bin/fcc"),
-		RunnerPath:   env("FLOWCODE_RUNNER", "/usr/local/bin/fcplay"),
-		WorkDir:      env("PLAYGROUND_WORKDIR", "/run/play"),
-		WebRoot:      env("PLAYGROUND_WEB_ROOT", "/srv/web"),
-		Timeout:      timeout,
-		QueueWait:    5 * time.Second,
-		TrustProxy:   env("TRUST_PROXY", "") == "1",
-		slots:        make(chan struct{}, concurrency),
-		limiter:      newRateLimiter(rpm, burst, 10*time.Minute),
+	deployRpm, err := strconv.Atoi(env("PLAYGROUND_DEPLOY_RATE_PER_MINUTE", "60"))
+	if err != nil || deployRpm < 1 {
+		return nil, errors.New("PLAYGROUND_DEPLOY_RATE_PER_MINUTE must be a positive integer")
 	}
+	deployBurst, err := strconv.Atoi(env("PLAYGROUND_DEPLOY_RATE_BURST", "20"))
+	if err != nil || deployBurst < 1 {
+		return nil, errors.New("PLAYGROUND_DEPLOY_RATE_BURST must be a positive integer")
+	}
+
+	compilerPath := env("FLOWCODE_FCC", "/usr/local/bin/fcc")
+	runnerPath := env("FLOWCODE_RUNNER", "/usr/local/bin/fcplay")
+	workDir := env("PLAYGROUND_WORKDIR", "/run/play")
+	dbPath := env("PLAYGROUND_DB_PATH", "/data/playground.db")
+	adminToken := os.Getenv("PLAYGROUND_ADMIN_TOKEN")
 
 	// Fail loudly at startup rather than returning 500s later: a missing
 	// binary or unreadable samples directory is a broken image, and it should
 	// be obvious from the first log line, not from user reports.
-	if err := checkExecutable(s.CompilerPath); err != nil {
+	if err := checkExecutable(compilerPath); err != nil {
 		return nil, err
 	}
-	if err := checkExecutable(s.RunnerPath); err != nil {
+	if err := checkExecutable(runnerPath); err != nil {
 		return nil, err
 	}
-	if err := checkWritableDir(s.WorkDir); err != nil {
+	if err := checkWritableDir(workDir); err != nil {
 		return nil, err
+	}
+	if err := checkWritableDir(filepath.Dir(dbPath)); err != nil {
+		return nil, err
+	}
+
+	sqlDB, err := db.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	eng := engine.New(compilerPath, runnerPath, workDir, timeout, 5*time.Second,
+		maxOutputBytes, concurrency)
+	st := store.New(sqlDB)
+
+	if adminToken == "" {
+		log.Print("PLAYGROUND_ADMIN_TOKEN not set — project management routes are open to anyone who can reach this server")
+	}
+
+	s := &Server{
+		WebRoot:       env("PLAYGROUND_WEB_ROOT", "/srv/web"),
+		TrustProxy:    env("TRUST_PROXY", "") == "1",
+		AdminToken:    adminToken,
+		engine:        eng,
+		limiter:       newRateLimiter(rpm, burst, 10*time.Minute),
+		deployLimiter: newRateLimiter(deployRpm, deployBurst, 10*time.Minute),
+		store:         st,
+		scheduler:     scheduler.New(st, eng),
+		sqlDB:         sqlDB,
 	}
 
 	samples, err := loadSamples(env("FLOWCODE_SAMPLES_DIR", "/opt/flowcode/samples"))
@@ -130,12 +172,55 @@ func newServerFromEnv() (*Server, error) {
 	return s, nil
 }
 
+const maxOutputBytes = 64 * 1024
+
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/samples", s.handleSamples)
 	mux.HandleFunc("/api/run", s.limiter.middleware(s.TrustProxy, s.handleRun))
+
+	mux.HandleFunc("POST /api/admin/login", s.handleAdminLogin)
+	mux.HandleFunc("POST /api/admin/logout", s.handleAdminLogout)
+
+	admin := s.requireAdmin
+
+	mux.HandleFunc("GET /api/projects", admin(s.handleListProjects))
+	mux.HandleFunc("POST /api/projects", admin(s.handleCreateProject))
+	mux.HandleFunc("GET /api/projects/{id}", admin(s.handleGetProject))
+	mux.HandleFunc("PATCH /api/projects/{id}", admin(s.handleUpdateProject))
+	mux.HandleFunc("DELETE /api/projects/{id}", admin(s.handleDeleteProject))
+
+	mux.HandleFunc("GET /api/projects/{id}/files", admin(s.handleListFiles))
+	mux.HandleFunc("PUT /api/projects/{id}/files/{name}", admin(s.handleSaveFile))
+	mux.HandleFunc("DELETE /api/projects/{id}/files/{name}", admin(s.handleDeleteFile))
+	mux.HandleFunc("POST /api/projects/{id}/files/{name}/run", admin(s.handleRunFile))
+
+	mux.HandleFunc("GET /api/projects/{id}/versions", admin(s.handleListVersions))
+	mux.HandleFunc("POST /api/projects/{id}/versions", admin(s.handleCreateVersion))
+	mux.HandleFunc("GET /api/projects/{id}/versions/{number}", admin(s.handleGetVersion))
+	mux.HandleFunc("POST /api/projects/{id}/versions/{number}/restore", admin(s.handleRestoreVersion))
+
+	mux.HandleFunc("GET /api/projects/{id}/deployments", admin(s.handleListDeployments))
+	mux.HandleFunc("POST /api/projects/{id}/deployments", admin(s.handleCreateDeployment))
+	mux.HandleFunc("PATCH /api/projects/{id}/deployments/{depId}", admin(s.handleUpdateDeployment))
+	mux.HandleFunc("DELETE /api/projects/{id}/deployments/{depId}", admin(s.handleDeleteDeployment))
+
+	mux.HandleFunc("GET /api/projects/{id}/triggers", admin(s.handleListTriggers))
+	mux.HandleFunc("POST /api/projects/{id}/triggers", admin(s.handleCreateTrigger))
+	mux.HandleFunc("PATCH /api/projects/{id}/triggers/{trigId}", admin(s.handleUpdateTrigger))
+	mux.HandleFunc("DELETE /api/projects/{id}/triggers/{trigId}", admin(s.handleDeleteTrigger))
+
+	mux.HandleFunc("GET /api/projects/{id}/executions", admin(s.handleListExecutions))
+	mux.HandleFunc("GET /api/projects/{id}/executions/{execId}", admin(s.handleGetExecution))
+
+	mux.HandleFunc("GET /api/projects/{id}/kv", admin(s.handleListKV))
+	mux.HandleFunc("DELETE /api/projects/{id}/kv/{key}", admin(s.handleDeleteKV))
+
+	// Public: no admin gate, since a deployment is meant to be reachable by
+	// whoever has its URL, same posture as /api/run.
+	mux.HandleFunc("/deploy/{slug}", s.deployLimiter.middleware(s.TrustProxy, s.handleDeploy))
 
 	// Static assets last, on the catch-all, so the API routes win.
 	mux.Handle("/", s.staticHandler())
@@ -168,7 +253,7 @@ func (s *Server) staticHandler() http.Handler {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// Re-stat the binaries rather than trusting the startup check: this is what
 	// the container healthcheck polls, and its job is to notice breakage now.
-	for _, p := range []string{s.CompilerPath, s.RunnerPath} {
+	for _, p := range []string{s.engine.CompilerPath, s.engine.RunnerPath} {
 		if err := checkExecutable(p); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"status": "unhealthy",
@@ -176,6 +261,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+	}
+	if err := s.sqlDB.PingContext(r.Context()); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "unhealthy",
+			"error":  "database: " + err.Error(),
+		})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
@@ -245,6 +337,43 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// decodeJSON decodes a size-capped JSON request body, writing a 400/413
+// response and returning a non-nil error if that fails — callers can just
+// `if err := decodeJSON(...); err != nil { return }`.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return err
+		}
+		writeError(w, http.StatusBadRequest, "request body must be valid JSON")
+		return err
+	}
+	return nil
+}
+
+// pathInt64 parses an {id}-style path value, writing a 400 and returning ok
+// = false if it isn't a valid positive integer.
+func pathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	v, err := strconv.ParseInt(r.PathValue(name), 10, 64)
+	if err != nil || v <= 0 {
+		writeError(w, http.StatusBadRequest, name+" must be a positive integer")
+		return 0, false
+	}
+	return v, true
+}
+
+// pathInt is pathInt64 for a smaller range, e.g. a version number.
+func pathInt(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
+	v, ok := pathInt64(w, r, name)
+	if !ok {
+		return 0, false
+	}
+	return int(v), true
 }
 
 func env(key, fallback string) string {
