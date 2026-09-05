@@ -2,11 +2,11 @@
 """End-to-end check against a running playground.
 
 Compiles and runs every bundled sample through the HTTP API and asserts each one
-comes back clean, then exercises the error and limit paths. This is the same
-check CI runs against the built image, so it is also the quickest way to satisfy
-yourself that a local `docker compose up` is actually working:
+comes back clean, then exercises the error and limit paths. Point it at a
+running instance to satisfy yourself that a `docker compose up` deploy is
+actually working:
 
-    python3 scripts/smoke.py http://localhost:8080
+    python3 scripts/smoke.py http://localhost:8033
 
 Exits non-zero on the first category of failure, with the offending response.
 """
@@ -225,4 +225,4 @@ def main(base: str) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main((sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080").rstrip("/")))
+    sys.exit(main((sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8033").rstrip("/")))

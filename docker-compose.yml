@@ -1,27 +1,42 @@
-# FlowCode Playground — builds the image from source and runs it.
+# FlowCode Playground — no Dockerfile, no prebuilt image, no CI.
 #
-#   docker compose up -d --build     →  http://localhost:8080
+# The service is a plain `golang:1.25-alpine` base image. On every
+# `docker compose up -d` it runs scripts/docker-entrypoint.sh, which installs
+# the rest of the toolchain (Node, a C compiler, git) and builds FlowCode,
+# the frontend, and the server — then execs the result. The whole repo is
+# bind-mounted at /src, so every cache (apk, FlowCode's git clone, Go's
+# module/build cache, npm's cache) and every build artifact lives on the
+# host under .buildcache/, and survives across deploys: `git pull` on the
+# host followed by `docker compose up -d` only rebuilds what changed, it
+# never redownloads dependencies from scratch.
 #
-# Point the build at a specific upstream revision with FLOWCODE_REF, which
-# takes any tag, branch, or commit SHA:
+#   git pull
+#   docker compose up -d
+#   docker compose logs -f
 #
-#   FLOWCODE_REF=v0.1.0 docker compose up -d --build
+# Pin FlowCode's revision for a reproducible build — `main` is the
+# convenient default, not the reproducible one:
+#
+#   FLOWCODE_REF=v0.1.0 docker compose up -d
 
 services:
   playground:
-    build:
-      context: .
-      args:
-        FLOWCODE_REPO: "${FLOWCODE_REPO:-https://github.com/tayyebi/flowcode.git}"
-        FLOWCODE_REF: "${FLOWCODE_REF:-main}"
-    image: flowcode-playground:local
+    image: golang:1.25-alpine
     container_name: flowcode-playground
     restart: unless-stopped
+    working_dir: /src
+    command: ["sh", "/src/scripts/docker-entrypoint.sh"]
 
+    # Only 8033 is ever published to the host. Everything else (the build
+    # toolchain, the compiled binaries, the caches) is internal to the
+    # container/bind mounts and never gets its own port.
     ports:
-      - "${PLAYGROUND_PORT:-8080}:8080"
+      - "8033:8033"
 
     environment:
+      PORT: "8033"
+      FLOWCODE_REPO: "${FLOWCODE_REPO:-https://github.com/tayyebi/flowcode.git}"
+      FLOWCODE_REF: "${FLOWCODE_REF:-main}"
       # How long a single compile or run may take before it is killed. The VM
       # has no instruction budget, so this is what stops a runaway workflow.
       PLAYGROUND_TIMEOUT: "${PLAYGROUND_TIMEOUT:-5s}"
@@ -42,53 +57,30 @@ services:
       # /api/run, /api/samples, /healthz, or a deployment's public URL.
       PLAYGROUND_ADMIN_TOKEN: "${PLAYGROUND_ADMIN_TOKEN:-}"
 
-    # --- Containment -------------------------------------------------------
-    # This service compiles and executes code submitted by strangers. The
-    # runtime itself is well behaved — flowcode's builtin plugins do no I/O and
-    # the CLI cannot load the `os` plugin that would — but the container is
-    # locked down anyway, because "the interpreter is safe" is a claim that
-    # should never be the only thing standing between the internet and a host.
-    read_only: true
-    tmpfs:
-      # Per-run scratch space. noexec matters: the playground writes .fc source
-      # and .fcb bytecode here and never executes from this mount, so anything
-      # that tries to is doing something we did not intend.
-      #
-      # uid/gid must match the `play` user the image creates (both 10001). This
-      # mount replaces the directory baked into the image, so without them the
-      # tmpfs arrives owned by root and every run fails to create its work dir.
-      - /run/play:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001
-      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001
     volumes:
-      # Unlike /run/play and /tmp above, this holds the SQLite database and
-      # must survive restarts — a *persistent* named volume, not tmpfs. A
-      # named volume gets the image's chowned ownership (10001:10001)
-      # automatically on first creation; a bind-mounted host directory does
-      # not, and must be pre-chowned to 10001:10001 by hand.
-      - playground-data:/data
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    mem_limit: 512m
-    pids_limit: 128
-    ulimits:
-      nofile:
-        soft: 1024
-        hard: 1024
+      # The whole repo. Source, build caches (.buildcache/), and build
+      # outputs (web/dist, .buildcache/bin/) all live here — on the host —
+      # so nothing produced by a build is trapped inside the container.
+      - .:/src
+      # apk hardcodes this path as its package cache when the directory
+      # exists, so it has to be a real mount rather than living under
+      # .buildcache/ like everything else the entrypoint script controls.
+      - ./.buildcache/apk-cache:/etc/apk/cache
+      # Persistent SQLite database (projects, versions, deployments,
+      # triggers, executions, kv log) — must survive restarts and rebuilds.
+      - ./data:/data
 
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8033/healthz"]
       interval: 30s
       timeout: 3s
       retries: 3
-      start_period: 5s
+      # The first run compiles FlowCode, the frontend, and the server from
+      # scratch — give it real time before the healthcheck starts failing.
+      start_period: 180s
 
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  playground-data:

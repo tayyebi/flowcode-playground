@@ -3,9 +3,18 @@ web/node_modules/
 web/dist/
 
 # Go build output. `go build ./...` names the binary after the directory, and
-# `go build -o playground` is what the Dockerfile and README use.
+# `go build -o playground` is what scripts/docker-entrypoint.sh and the
+# README use.
 server/server
 server/playground
+
+# docker-compose.yml bind-mounts the whole repo, so every build cache
+# (apk, FlowCode's git clone, Go's module/build cache, npm's cache) and the
+# compiled binaries live here on the host, deliberately, across deploys.
+/.buildcache/
+
+# Persistent SQLite database.
+/data/
 
 # Local environment overrides
 .env

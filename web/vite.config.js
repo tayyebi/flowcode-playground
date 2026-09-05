@@ -12,8 +12,8 @@ export default defineConfig({
     // `npm run dev` against a locally running server, so the frontend can be
     // iterated on without rebuilding the container.
     proxy: {
-      "/api": "http://localhost:8080",
-      "/healthz": "http://localhost:8080",
+      "/api": "http://localhost:8033",
+      "/healthz": "http://localhost:8033",
     },
   },
 });

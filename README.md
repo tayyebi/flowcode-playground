@@ -12,7 +12,7 @@ workflow's `store set` calls wrote.
 docker compose up -d
 ```
 
-Then open <http://localhost:8080>.
+Then open <http://localhost:8033>.
 
 ## Two ways to use this
 
@@ -59,36 +59,56 @@ at INFO or DEBUG.
 So [`runner/fcplay.c`](runner/fcplay.c) is a ~60-line driver: flowcode's own
 `src/cli.c` with the log level turned down to DEBUG and resource limits
 installed on itself. It links against flowcode's sources using only public
-headers, and the Docker build fails if its trace ever stops appearing.
+headers, and [`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh)
+fails the build if its trace ever stops appearing.
 
 ---
 
 ## Running it
 
-[`docker-compose.yml`](docker-compose.yml) builds the image from FlowCode
-source and runs it with the containment settings described below.
+There is no Dockerfile, no prebuilt image, and no CI. `docker compose up -d`
+runs [`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh) inside a
+plain `golang:1.25-alpine` base image: it installs the rest of the toolchain
+(Node, a C compiler, git) and builds FlowCode, the frontend, and the server,
+then execs the result. The repo is bind-mounted into the container, so every
+cache (apk, FlowCode's git clone, Go's module/build cache, npm's cache) and
+every build artifact lives under `.buildcache/` **on the host** — a rebuild
+after a `git pull` only redoes what actually changed, it never redownloads
+dependencies from scratch.
+
+**Deploying to a server**, in full:
 
 ```sh
-docker compose up -d --build
+git pull
+docker compose up -d
 docker compose logs -f
-docker compose down
 ```
 
-Pin the revision for a reproducible build — `main` is the convenient default,
-not the reproducible one:
+The first run compiles everything from a cold cache and takes a few minutes;
+every run after that is fast, since `.buildcache/` and `web/node_modules`
+persist between them.
 
 ```sh
-FLOWCODE_REF=v0.1.0 docker compose up -d --build
+docker compose down       # stop the container; .buildcache/ and data/ are untouched
+```
+
+Pin FlowCode's revision for a reproducible build — `main` is the convenient
+default, not the reproducible one:
+
+```sh
+FLOWCODE_REF=v0.1.0 docker compose up -d
 ```
 
 `FLOWCODE_REF` takes any tag, branch, or commit SHA, and `FLOWCODE_REPO` points
 the build at a fork.
 
+Only port **8033** is ever published to the host; everything else the
+container does is internal.
+
 Configuration, all optional:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PLAYGROUND_PORT` | `8080` | Host port to publish |
 | `PLAYGROUND_TIMEOUT` | `5s` | Wall-clock limit for one compile or one run |
 | `PLAYGROUND_MAX_CONCURRENT` | `4` | Simultaneous compile+run slots; beyond this, requests queue then 503 |
 | `PLAYGROUND_RATE_PER_MINUTE` | `30` | Per-IP run budget for the anonymous playground |
@@ -96,8 +116,11 @@ Configuration, all optional:
 | `PLAYGROUND_DEPLOY_RATE_PER_MINUTE` | `60` | Per-IP budget for public `/deploy/{slug}` calls, tracked separately so deploy traffic can't starve (or be starved by) the playground's own budget |
 | `PLAYGROUND_DEPLOY_RATE_BURST` | `20` | Burst allowance for `/deploy/{slug}` |
 | `TRUST_PROXY` | `0` | Set to `1` **only** behind a reverse proxy you control — see below |
-| `PLAYGROUND_DB_PATH` | `/data/playground.db` | Where the SQLite database (projects, versions, deployments, triggers, executions, kv log) lives. Needs a writable, **persistent** path — see the compose file's `playground-data` volume |
 | `PLAYGROUND_ADMIN_TOKEN` | *(unset)* | A single shared secret gating `/api/projects...`. Unset means those routes are open to anyone who can reach the server — same posture as before Projects existed. Never gates `/api/run`, `/api/samples`, `/healthz`, or a deployment's public URL |
+
+The port (`8033`) and the SQLite path (`/data/playground.db`, bind-mounted
+from `./data` on the host) are fixed in `docker-compose.yml` rather than
+configurable — see it directly to change either.
 
 ### Without Docker
 
@@ -121,11 +144,12 @@ FLOWCODE_SAMPLES_DIR=../flowcode/samples \
 PLAYGROUND_WORKDIR=/tmp/play \
 PLAYGROUND_WEB_ROOT=web/dist \
 PLAYGROUND_DB_PATH=/tmp/playground.db \
+PORT=8033 \
 /tmp/playground
 ```
 
 For frontend work, `cd web && npm run dev` serves on :5173 and proxies `/api` to
-:8080, so the editor reloads without rebuilding anything else.
+:8033, so the editor reloads without rebuilding anything else.
 
 ---
 
@@ -141,12 +165,14 @@ plugin that *does* perform shell execution and network calls is not built by
 `make all`, is not copied into the image, and cannot be loaded anyway: the
 `flowcode` CLI has no plugin flag.
 
-**The container is locked down regardless.** Because "the interpreter is safe"
-should never be the only thing between the internet and a host:
+**Defence in depth still applies, but at a different layer.** Because there's
+no Dockerfile, the container itself runs as root and with a writable
+filesystem — it has to, to install packages and compile on every deploy — so
+it does *not* get the uid-10001 / read-only-root / `cap_drop: ALL` hardening
+an earlier version of this repo baked into a purpose-built image. What's left
+in place, all inside `fcplay` and the server itself, independent of how the
+container is set up:
 
-- runs as an unprivileged user (uid 10001), `cap_drop: ALL`, `no-new-privileges`
-- read-only root filesystem; the only writable paths are `noexec,nosuid,nodev`
-  tmpfs mounts
 - each submission gets its own work directory, removed when the run ends
   including on timeout
 - `fcplay` installs `RLIMIT_CPU` (2s), `RLIMIT_AS` (256 MB), `RLIMIT_FSIZE`,
@@ -164,8 +190,9 @@ The timeout is load-bearing rather than theoretical: `exec_loop` and
 is no instruction budget, so a workflow that jumps backwards runs forever.
 
 **The caveat:** this is defence in depth on a shared kernel, not a virtualisation
-boundary. For an untrusted public deployment, put it behind a proxy you control
-and consider running it in a VM or under gVisor.
+boundary — and with the container itself running as root, that kernel boundary
+is weaker than it was. For an untrusted public deployment, put it behind a
+proxy you control and strongly consider running it in a VM or under gVisor.
 
 **On `TRUST_PROXY`:** leave it at `0` unless a reverse proxy you control sets
 `X-Forwarded-For`. Honouring that header unconditionally lets any client forge
@@ -304,18 +331,21 @@ web/               Vite + CodeMirror 6, no framework
                           executions/kv panels
   src/flowcode-lang.js   syntax mode derived from src/compiler.c
   src/share.js           deflate + base64url permalinks (playground only)
-scripts/smoke.py   end-to-end check against a running instance
+scripts/smoke.py             end-to-end check against a running instance
+scripts/docker-entrypoint.sh what `docker compose up -d` actually runs: builds
+                              FlowCode + the frontend + the server, then execs
+                              the playground binary
 ```
 
 ## Tests
 
 ```sh
 cd server && go test ./...                    # unit tests
-python3 scripts/smoke.py http://localhost:8080  # end-to-end, against a running instance
+python3 scripts/smoke.py http://localhost:8033  # end-to-end, against a running instance
 ```
 
 The Go end-to-end tests skip unless `FLOWCODE_FCC` and `FLOWCODE_RUNNER` point
 at real binaries; set `FLOWCODE_SAMPLES_DIR` as well to check every bundled
-sample. CI builds the toolchain so they always run, and both CI and the publish
-workflow run `scripts/smoke.py` against the real image under the same
-containment flags compose uses.
+sample — see [Without Docker](#without-docker) for how to build them locally.
+There is no CI: run both of the above yourself before deploying, and run
+`scripts/smoke.py` against the real instance after `docker compose up -d`.
