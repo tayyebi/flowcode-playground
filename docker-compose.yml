@@ -1,15 +1,21 @@
-# FlowCode Playground — runs the published image from GHCR.
+# FlowCode Playground — builds the image from source and runs it.
 #
-#   docker compose up -d     →  http://localhost:8080
+#   docker compose up -d --build     →  http://localhost:8080
 #
-# To build from source instead of pulling, layer the build override on top:
-#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+# Point the build at a specific upstream revision with FLOWCODE_REF, which
+# takes any tag, branch, or commit SHA:
+#
+#   FLOWCODE_REF=v0.1.0 docker compose up -d --build
 
 services:
   playground:
-    image: ghcr.io/tayyebi/flowcode-playground:latest
+    build:
+      context: .
+      args:
+        FLOWCODE_REPO: "${FLOWCODE_REPO:-https://github.com/tayyebi/flowcode.git}"
+        FLOWCODE_REF: "${FLOWCODE_REF:-main}"
+    image: flowcode-playground:local
     container_name: flowcode-playground
-    pull_policy: always
     restart: unless-stopped
 
     ports:

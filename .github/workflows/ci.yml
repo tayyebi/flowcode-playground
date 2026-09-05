@@ -123,10 +123,8 @@ jobs:
 
       # The compose file is a deliverable; a syntax error in it should fail here
       # rather than on someone's machine.
-      - name: Validate compose files
-        run: |
-          docker compose -f docker-compose.yml config >/dev/null
-          docker compose -f docker-compose.yml -f docker-compose.build.yml config >/dev/null
+      - name: Validate compose file
+        run: docker compose -f docker-compose.yml config >/dev/null
 
       - name: Container logs
         if: always()

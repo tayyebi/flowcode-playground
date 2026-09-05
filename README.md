@@ -65,17 +65,24 @@ headers, and the Docker build fails if its trace ever stops appearing.
 
 ## Running it
 
-### From GHCR (the default)
-
-[`docker-compose.yml`](docker-compose.yml) pulls
-`ghcr.io/tayyebi/flowcode-playground:latest` and runs it with the containment
-settings described below.
+[`docker-compose.yml`](docker-compose.yml) builds the image from FlowCode
+source and runs it with the containment settings described below.
 
 ```sh
-docker compose up -d
+docker compose up -d --build
 docker compose logs -f
 docker compose down
 ```
+
+Pin the revision for a reproducible build — `main` is the convenient default,
+not the reproducible one:
+
+```sh
+FLOWCODE_REF=v0.1.0 docker compose up -d --build
+```
+
+`FLOWCODE_REF` takes any tag, branch, or commit SHA, and `FLOWCODE_REPO` points
+the build at a fork.
 
 Configuration, all optional:
 
@@ -91,23 +98,6 @@ Configuration, all optional:
 | `TRUST_PROXY` | `0` | Set to `1` **only** behind a reverse proxy you control — see below |
 | `PLAYGROUND_DB_PATH` | `/data/playground.db` | Where the SQLite database (projects, versions, deployments, triggers, executions, kv log) lives. Needs a writable, **persistent** path — see the compose file's `playground-data` volume |
 | `PLAYGROUND_ADMIN_TOKEN` | *(unset)* | A single shared secret gating `/api/projects...`. Unset means those routes are open to anyone who can reach the server — same posture as before Projects existed. Never gates `/api/run`, `/api/samples`, `/healthz`, or a deployment's public URL |
-
-### Building from source
-
-```sh
-docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
-```
-
-The image builds FlowCode from source. Pin the revision for a reproducible
-build — `main` is the convenient default, not the reproducible one:
-
-```sh
-FLOWCODE_REF=v0.1.0 docker compose \
-  -f docker-compose.yml -f docker-compose.build.yml up --build
-```
-
-`FLOWCODE_REF` takes any tag, branch, or commit SHA, and `FLOWCODE_REPO` points
-the build at a fork.
 
 ### Without Docker
 
