@@ -156,9 +156,29 @@ func TestKVUpsertAndExtract(t *testing.T) {
 		t.Fatalf("ListKV = %+v", entries)
 	}
 
-	writes := ExtractStoreSets(`store set key = "greeting" value = "hello, world"`)
-	if writes["greeting"] != "hello, world" {
+	// A realistic fcplay trace: the store-set dump lines land after
+	// "vm completed successfully", one per key, in the exact format
+	// runner/fcplay.c emits (which the entrypoint's build check pins).
+	trace := "[flowcode:DEBUG] registered 17 builtin plugins\n" +
+		"[flowcode:INFO] vm starting, 3 instructions\n" +
+		"[flowcode:DEBUG] builtin plugin http.get invoked (no-op pass-through)\n" +
+		"[flowcode:INFO] vm completed successfully\n" +
+		"[flowcode:INFO] store set key = \"greeting\" value = \"hello, world\"\n" +
+		"[flowcode:INFO] store set key = \"onboarding.42\" value = \"{}\"\n"
+	writes := ExtractStoreSets(trace)
+	if len(writes) != 2 || writes["greeting"] != "hello, world" || writes["onboarding.42"] != "{}" {
 		t.Errorf("ExtractStoreSets = %+v", writes)
+	}
+
+	// Nothing else in the trace may match — in particular plugin-call lines,
+	// even one for a hypothetical store.set plugin.
+	for _, line := range []string{
+		"[flowcode:DEBUG] builtin plugin store.set invoked (no-op pass-through)",
+		"[flowcode:INFO] vm starting, 3 instructions",
+	} {
+		if w := ExtractStoreSets(line); len(w) != 0 {
+			t.Errorf("ExtractStoreSets(%q) = %+v, want no matches", line, w)
+		}
 	}
 }
 

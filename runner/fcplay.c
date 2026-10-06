@@ -13,10 +13,16 @@
  *   2. Resource limits are installed on this process before anything is loaded.
  *      The VM has no fuel counter — exec_loop/exec_route in vm.c assign
  *      frame->ip = target unconditionally, so a backward jump spins forever.
- *      This is the process that can spin, so the limits belong here rather than
+ *      This is the process that can spin, so the limits belong here rather
  *      in a separate wrapper binary. The server still applies its own wall-clock
  *      timeout on top; RLIMIT_CPU only counts CPU time, so a process blocked on
  *      something would slip past it.
+ *
+ *   3. After the run, every key a `store set` wrote is dumped as a
+ *      `store set key = "..." value = "..."` trace line. STORE is an opcode,
+ *      not a plugin call, so the VM logs nothing when it executes — without
+ *      this dump the server's KV log (which parses those lines out of the
+ *      trace; see server/internal/store/kv.go) would always be empty.
  *
  * Everything else — builtin registration, the default token seed — is kept
  * verbatim from cli.c. Dropping either breaks the samples that `store` before
@@ -61,6 +67,98 @@ static void limit(int resource, rlim_t value) {
     (void)setrlimit(resource, &rl);
 }
 #endif
+
+/* Matches the VM's own key buffer (src/vm.c defines the same constant
+ * privately): a longer STORE argument is skipped rather than truncated,
+ * exactly like exec_store's own overflow behaviour. */
+#define FCPLAY_KEY_MAX 256
+
+/* Keeps one dumped value to a sane share of the 64 KB stderr cap the server
+ * enforces; longer values are truncated with an ellipsis. */
+#define FCPLAY_VALUE_DISPLAY 512
+
+/* Synthetic STOREs the compiler emits for on_error strategies (src/compiler.c)
+ * are control flow, not user data — keep them out of the dump. */
+static int is_synthetic_store_key(const char *key) {
+    return strncmp(key, "on_error:", 9) == 0 || strncmp(key, "__on_error.", 11) == 0;
+}
+
+/* Emit one line in the exact shape server/internal/store/kv.go parses. The
+ * value is sanitized to survive being a single quoted token on one line:
+ * a '"' would end the server's capture early, a control character would
+ * break the line. */
+static void log_store_set(const char *key, const void *value, uint32_t size) {
+    const unsigned char *in = (const unsigned char *)value;
+    char vbuf[FCPLAY_VALUE_DISPLAY + 8];
+    uint32_t limit = size > FCPLAY_VALUE_DISPLAY ? FCPLAY_VALUE_DISPLAY : size;
+    uint32_t i;
+    size_t n = 0;
+
+    for (i = 0; i < limit; ++i) {
+        unsigned char ch = in[i];
+        if (ch == '"') ch = '\'';
+        else if (ch < 0x20 || ch == 0x7f) ch = ' ';
+        vbuf[n++] = (char)ch;
+    }
+    if (size > limit) {
+        vbuf[n++] = '.';
+        vbuf[n++] = '.';
+        vbuf[n++] = '.';
+    }
+    vbuf[n] = '\0';
+    fc_log(FC_LOG_INFO, "store set key = \"%s\" value = \"%s\"", key, vbuf);
+}
+
+/*
+ * Dump the final value of every key the program's STORE instructions target.
+ *
+ * The state store exposes lookup but no iteration, so the key list comes from
+ * the bytecode itself: each STORE's argument, or "last_token" for the keyless
+ * form exec_store falls back to. Semantics this buys:
+ *
+ *   - a key stored and re-stored (a loop, two branches) prints once, with
+ *     its final value — the log records what the run left behind;
+ *   - a STORE whose arm never ran is skipped, because its key never entered
+ *     the store and fc_state_get reports it missing;
+ *   - error stores (`__error.<ip>`, written directly by the VM) are never
+ *     listed as instructions, so they stay out too.
+ */
+static void dump_stores(const fc_program_t *program, fc_state_store_t *state) {
+    char seen[64][FCPLAY_KEY_MAX];
+    uint32_t seen_count = 0;
+    uint32_t i;
+
+    for (i = 0; i < program->instruction_count; ++i) {
+        const fc_instruction_t *ins = &program->instructions[i];
+        char key[FCPLAY_KEY_MAX];
+        const void *value;
+        uint32_t size;
+        uint32_t j;
+
+        if (ins->opcode != FC_OP_STORE) continue;
+
+        if (ins->arg_length == 0) {
+            memcpy(key, "last_token", sizeof("last_token"));
+        } else {
+            if (ins->arg_length >= sizeof(key)) continue;
+            memcpy(key, &program->arg_blob[ins->arg_offset], ins->arg_length);
+            key[ins->arg_length] = '\0';
+        }
+        if (is_synthetic_store_key(key)) continue;
+
+        for (j = 0; j < seen_count; ++j) {
+            if (strcmp(seen[j], key) == 0) break;
+        }
+        if (j < seen_count) continue;
+        if (seen_count < (uint32_t)(sizeof(seen) / sizeof(seen[0]))) {
+            strcpy(seen[seen_count], key);
+            seen_count++;
+        }
+
+        if (fc_state_get(state, key, &value, &size) == 0 && value != NULL)
+            log_store_set(key, value, size);
+    }
+}
 
 /*
  * Best-effort: a failed setrlimit is not worth aborting a run over, because the
@@ -136,6 +234,11 @@ static int run_fcb(const char *path) {
             fprintf(stderr, "error: workflow execution failed\n");
         }
     }
+
+    /* Whatever the run's fate, the stores that did land are the trace's only
+     * record of what the workflow wrote — dump them while the state store and
+     * the program are still alive. */
+    dump_stores(&program, state);
 
     fc_vm_destroy(vm);
     fc_plugins_destroy(plugins);

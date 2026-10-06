@@ -34,7 +34,7 @@ produces three genuinely different kinds of information:
 
 | Tab | Shows |
 |---|---|
-| **Trace** | The VM's execution log — instruction count, every plugin invocation in order, and whether the workflow completed |
+| **Trace** | The VM's execution log — instruction count, every plugin invocation in order, what each `store set` left behind, and whether the workflow completed |
 | **Bytecode** | The decoded `.fcb` image: each instruction, its opcode, and its argument, with `ROUTE`/`LOOP` jump targets rendered as clickable links |
 | **Diagnostics** | `fcc`'s errors and warnings, each one clickable to its line and mirrored as an inline marker in the editor |
 
@@ -56,11 +56,14 @@ The runtime's log level defaults to `FC_LOG_WARN`, and everything worth seeing �
 `vm starting`, each builtin plugin call, `vm completed successfully` — is logged
 at INFO or DEBUG.
 
-So [`runner/fcplay.c`](runner/fcplay.c) is a ~60-line driver: flowcode's own
-`src/cli.c` with the log level turned down to DEBUG and resource limits
-installed on itself. It links against flowcode's sources using only public
-headers, and [`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh)
-fails the build if its trace ever stops appearing.
+So [`runner/fcplay.c`](runner/fcplay.c) is a small driver: flowcode's own
+`src/cli.c` with the log level turned down to DEBUG, resource limits installed
+on itself, and — because the VM's STORE opcode logs nothing, being an opcode
+rather than a plugin call — a post-run dump of every key a `store set` wrote,
+in the one-line format the server's KV log is parsed from. It links against
+flowcode's sources using only public headers, and
+[`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh) fails the build
+if that trace ever stops appearing.
 
 ---
 
@@ -290,11 +293,13 @@ today:
   returning the raw compile/run result (a note on this ships in the response
   body and an `X-FlowCode-Deploy-Note` header, so this isn't a silent
   surprise). It is not yet a real request/response web endpoint.
-- **The KV log is write-side only.** It's populated by best-effort parsing
-  `store set key="..." value="..."` out of a run's trace — there is no
-  confirmed `store get`/read-back mechanism in FlowCode's runtime, so a
-  workflow cannot read a previously stored value back mid-run. Treat the KV
-  panel as a debug/audit log, not a working key-value API.
+- **The KV log is write-side only.** After each run, `fcplay` dumps the final
+  value of every key the workflow's `store set` calls wrote into the trace,
+  and the server parses those lines into the KV panel (values sanitized to
+  quotes-become-apostrophes and truncated at 512 bytes). There is no confirmed
+  `store get`/read-back mechanism in FlowCode's runtime, so a workflow cannot
+  read a previously stored value back mid-run. Treat the KV panel as a
+  debug/audit log, not a working key-value API.
 
 Lifting the last two limitations needs a real host-input/read-back bridge
 into `fcplay` (which is a local file in this repo, so it's ours to extend)
@@ -304,7 +309,7 @@ attempted here.
 ## Layout
 
 ```
-runner/fcplay.c    trace driver: cli.c + DEBUG logging + rlimits
+runner/fcplay.c    trace driver: cli.c + DEBUG logging + rlimits + store-set dump
 server/            Go HTTP server
   main.go            routing, startup, admin token, health
   run.go             POST /api/run (anonymous playground)

@@ -41,6 +41,9 @@ cp "$FLOWCODE_SRC/fcc" "$FLOWCODE_SRC/flowcode" "$BIN_DIR/"
 echo "==> flowcode: smoke-checking the trace driver"
 "$FLOWCODE_SRC/fcc" "$FLOWCODE_SRC/samples/hello-world/hello.fc" /tmp/hello.fcb
 "$BIN_DIR/fcplay" /tmp/hello.fcb 2>&1 | grep -q 'vm completed successfully'
+# hello.fc stores under "greeting": the server's KV log is parsed out of this
+# dump, so a drifted format must fail the build, not silently empty the log.
+"$BIN_DIR/fcplay" /tmp/hello.fcb 2>&1 | grep -q 'store set key = "greeting" value = "hello, world"'
 
 echo "==> web: building frontend"
 export npm_config_cache="$CACHE_DIR/npm"

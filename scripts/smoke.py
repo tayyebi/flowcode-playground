@@ -21,6 +21,15 @@ import urllib.request
 
 HELLO = 'workflow: Smoke\n\nstep greeting:\n    emit\n        value = "hi"\nend\n'
 
+# Runs through the project engine and must show up in the project's KV log:
+# fcplay dumps `store set` lines into the trace and the server parses them
+# back out, storing the run's final value per key.
+KV_PROBE = (
+    "workflow: KVProbe\n\n"
+    "step greeting:\n    emit\n        value = \"hi\"\nend\n\n"
+    "step saved:\n    store set\n        key = \"smoke.greeting\"\n        value = greeting\nend\n"
+)
+
 
 def post_run(base: str, source: str, *, respect_limit: bool = True) -> tuple[int, dict]:
     """POST one program.
@@ -170,6 +179,26 @@ def main(base: str) -> int:
             f"run file via the project engine, same shape as /api/run ({status})",
         )
 
+        # A file that stores: the KV log is parsed out of the run trace's
+        # store-set dump, so this is what proves that pipeline end to end.
+        status, _ = request_json(
+            base, "PUT", f"/api/projects/{project_id}/files/kv.fc", {"content": KV_PROBE},
+        )
+        check(status == 200, f"save kv probe file ({status})")
+
+        status, run = request_json(base, "POST", f"/api/projects/{project_id}/files/kv.fc/run")
+        check(
+            status == 200 and run.get("run") is not None and run["run"]["exitCode"] == 0,
+            f"run the kv probe file ({status})",
+        )
+
+        status, kv = request_json(base, "GET", f"/api/projects/{project_id}/kv")
+        probe = next((e for e in kv if e["key"] == "smoke.greeting"), None) if isinstance(kv, list) else None
+        check(
+            status == 200 and probe is not None and probe["value"] == "hi",
+            f"a store set lands in the kv log with its final value ({status}, {kv})",
+        )
+
         status, version = request_json(base, "POST", f"/api/projects/{project_id}/versions", {"label": "v1"})
         check(status == 201 and version["number"] == 1, f"save version ({status})")
 
@@ -203,9 +232,6 @@ def main(base: str) -> int:
                 break
             time.sleep(2)
         check(fired, "a short-interval trigger fires within the poll window")
-
-        status, _ = request_json(base, "GET", f"/api/projects/{project_id}/kv")
-        check(status == 200, f"kv store is reachable ({status})")
 
         status, _ = request_json(base, "DELETE", f"/api/projects/{project_id}")
         check(status == 204, f"delete project cleans up (cascades) ({status})")

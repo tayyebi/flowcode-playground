@@ -9,8 +9,9 @@ import (
 // KVEntry is one row of a project's best-effort, write-side key/value log.
 //
 // Phase A limitation (see the plan doc): FlowCode's `store` builtin has no
-// confirmed read-back mechanism, so this is populated by parsing `store set`
-// calls out of the run trace after the fact. It is a debug/audit log a human
+// confirmed read-back mechanism, so this is populated by parsing the
+// `store set` dump lines out of the run trace after the fact — one entry per
+// key, holding the run's final value for it. It is a debug/audit log a human
 // can inspect from the dashboard, not a working key-value API a running
 // script can read from — do not present it as the latter in the UI.
 type KVEntry struct {
@@ -63,19 +64,22 @@ func (s *Store) DeleteKV(ctx context.Context, projectID int64, key string) error
 	return err
 }
 
-// storeSetRe is a best-effort match against fcplay's DEBUG trace for a
-// `store set` call. fcplay runs the VM at DEBUG log level specifically so
-// every builtin plugin invocation is logged (README.md), but the exact line
-// format for a plugin call has not been confirmed against a real build in
-// this environment — this pattern is a starting point and MUST be checked
-// against actual fcplay output (`key = "..."` / `value = "..."` are the
-// param names used in FlowCode's own `store set` syntax) and adjusted before
-// this is relied on for anything beyond a best-effort debug log.
-var storeSetRe = regexp.MustCompile(`(?i)store\s+set.*?key\s*=\s*"([^"]*)".*?value\s*=\s*"([^"]*)"`)
+// storeSetRe matches the trace line fcplay emits after a run for every key a
+// `store set` wrote (runner/fcplay.c, dump_stores): exactly
+//
+//	[flowcode:INFO] store set key = "demo.greeting" value = "hello"
+//
+// The VM itself logs STORE opcodes not at all — only plugin calls are traced —
+// so fcplay owns both sides of this contract and the entrypoint's build check
+// pins the format by grepping a known sample's dump. Values arrive pre-sanitized
+// (quotes become apostrophes, control characters spaces) and truncated at 512
+// bytes so they always fit the single quoted token this regex captures.
+var storeSetRe = regexp.MustCompile(`(?i)store\s+set\s+key\s*=\s*"([^"]*)"\s+value\s*=\s*"([^"]*)"`)
 
-// ExtractStoreSets pulls `store set key="..." value="..."` calls out of a run
-// trace. It returns no error on zero matches — an empty result is a normal,
-// expected outcome for a workflow that never calls `store set`.
+// ExtractStoreSets pulls the `store set` lines out of a run trace, keyed by
+// store key with the run's final value for each. It returns no error on zero
+// matches — an empty result is a normal, expected outcome for a workflow that
+// never calls `store set`.
 func ExtractStoreSets(trace string) map[string]string {
 	writes := map[string]string{}
 	for _, m := range storeSetRe.FindAllStringSubmatch(trace, -1) {
