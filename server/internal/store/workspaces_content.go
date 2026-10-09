@@ -43,7 +43,7 @@ func scanWSProject(row rowScanner) (*WSProject, error) {
 // *within that workspace* from the name (Cloudflare-style: two accounts may
 // both have "api").
 func (s *Store) CreateWSProject(ctx context.Context, workspaceID, createdBy int64, name, description string) (*WSProject, error) {
-	base := slugify(name)
+	base := Slugify(name)
 	if base == "" {
 		base = "project"
 	}

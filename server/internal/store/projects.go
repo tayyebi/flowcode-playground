@@ -8,8 +8,13 @@ import (
 
 // Project is a named, saved workspace: a folder of independently runnable
 // FlowCode files plus their saved versions, deployments, and triggers.
+//
+// WorkspaceID is zero for legacy single-tenant rows and is set only when a
+// project is scanned from ws_projects (see ProjectAccess in workspaces.go);
+// the legacy projects table has no such column.
 type Project struct {
 	ID          int64  `json:"id"`
+	WorkspaceID int64  `json:"workspaceId,omitempty"`
 	Slug        string `json:"slug"`
 	Name        string `json:"name"`
 	Description string `json:"description"`

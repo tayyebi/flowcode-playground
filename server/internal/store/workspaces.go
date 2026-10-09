@@ -116,7 +116,7 @@ func scanWorkspace(row rowScanner) (*Workspace, error) {
 // its name, appending a numeric suffix on collision (same convention as
 // project slugs).
 func (s *Store) CreateWorkspace(ctx context.Context, name string) (*Workspace, error) {
-	base := slugify(name)
+	base := Slugify(name)
 	if base == "" {
 		base = "workspace"
 	}
