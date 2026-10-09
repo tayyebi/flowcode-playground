@@ -196,6 +196,23 @@ func (s *Store) PruneExecutions(ctx context.Context, keepPerProject int) (int64,
 	return res.RowsAffected()
 }
 
+// RecordRunWithKV records an execution row and, best-effort, any `store set`
+// calls it produced by parsing the run trace. Shared by project runs,
+// deployments, triggers, and the example seeder so the bookkeeping is
+// identical no matter which path invoked the engine.
+func (s *Store) RecordRunWithKV(ctx context.Context, ne NewExecution) (*Execution, error) {
+	exec, err := s.RecordExecution(ctx, ne)
+	if err != nil {
+		return nil, err
+	}
+	if ne.Result != nil && ne.Result.Run != nil {
+		for k, v := range ExtractStoreSets(ne.Result.Run.Stderr) {
+			s.UpsertKV(ctx, ne.ProjectID, k, v, &exec.ID)
+		}
+	}
+	return exec, nil
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

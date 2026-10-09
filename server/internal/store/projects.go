@@ -35,7 +35,7 @@ type rowScanner interface {
 // CreateProject inserts a new project, deriving a URL-safe unique slug from
 // name and appending a numeric suffix on collision.
 func (s *Store) CreateProject(ctx context.Context, name, description string) (*Project, error) {
-	base := slugify(name)
+	base := Slugify(name)
 	if base == "" {
 		base = "project"
 	}
@@ -121,7 +121,10 @@ func (s *Store) touchProject(ctx context.Context, id int64) error {
 	return err
 }
 
-func slugify(name string) string {
+// Slugify derives a URL-safe slug from a project name. Exported because the
+// seeder needs to predict the slug a manifest's name will produce, both to
+// adopt pre-seeded databases and to link its bookkeeping rows.
+func Slugify(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	var b strings.Builder
 	lastDash := false

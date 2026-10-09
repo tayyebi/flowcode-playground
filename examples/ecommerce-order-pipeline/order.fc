@@ -1,0 +1,258 @@
+use http
+use email
+use storage
+use crm
+
+workflow: EcommerceOrderPipeline
+
+trigger:
+    webhook "/orders/new"
+end
+
+step order:
+    transform normalize.order
+        input = payload
+end
+
+step orderSaved:
+    store set
+        key = "order.{{order.id}}"
+        value = order
+end
+
+step inventoryChecks:
+    loop item in order.items
+        http.get
+            url = "https://inventory.company.com/api/stock/{{item.sku}}"
+    end
+end
+
+step availability:
+    transform check.stockAvailability
+        items = order.items
+        stock = inventoryChecks
+end
+
+match availability.status
+    all_available ->
+        step reservations:
+            loop item in order.items
+                http.post
+                    url = "https://inventory.company.com/api/reserve"
+                    body = {
+                        sku = item.sku
+                        quantity = item.quantity
+                        order_id = order.id
+                    }
+            end
+        end
+
+    partial ->
+        step partialItems:
+            transform split.available
+                items = order.items
+                stock = inventoryChecks
+        end
+
+        step backorderNotify:
+            email.send
+                to = order.customer_email
+                subject = "Some items in order {{order.id}} are on backorder"
+                body = "The following items are temporarily out of stock: {{partialItems.unavailable}}. We will notify you when they ship."
+        end
+
+        step backorderSaved:
+            store set
+                key = "order.{{order.id}}.backorders"
+                value = partialItems.unavailable
+        end
+
+        step partialReservations:
+            loop item in partialItems.available
+                http.post
+                    url = "https://inventory.company.com/api/reserve"
+                    body = {
+                        sku = item.sku
+                        quantity = item.quantity
+                        order_id = order.id
+                    }
+            end
+        end
+
+    none_available ->
+        step outOfStockNotify:
+            email.send
+                to = order.customer_email
+                subject = "Order {{order.id}} cannot be fulfilled"
+                body = "All items in your order are currently out of stock. We will notify you when availability changes."
+        end
+
+        step orderCancelled:
+            store set
+                key = "order.{{order.id}}.status"
+                value = "cancelled_no_stock"
+        end
+
+        stop
+end
+
+step fraudCheck:
+    http.post
+        url = "https://fraud.company.com/api/check"
+        body = {
+            order_id = order.id
+            amount = order.total
+            customer_id = order.customer_id
+            shipping_address = order.shipping_address
+            payment_method = order.payment_method
+        }
+end
+
+match fraudCheck.risk_level
+    high ->
+        step fraudHold:
+            store set
+                key = "order.{{order.id}}.status"
+                value = "fraud_hold"
+        end
+
+        email.send
+            to = "fraud-team@company.com"
+            subject = "FRAUD HOLD: Order {{order.id}} (${{order.total}})"
+            body = "High-risk order flagged. Customer: {{order.customer_id}}. Reason: {{fraudCheck.reason}}"
+        end
+
+        stop
+
+    medium ->
+        step fraudReview:
+            store set
+                key = "order.{{order.id}}.fraud_flag"
+                value = "medium_risk"
+        end
+end
+
+step payment:
+    http.post
+        url = "https://payments.company.com/api/charge"
+        body = {
+            order_id = order.id
+            amount = order.total
+            method = order.payment_method
+            customer_id = order.customer_id
+        }
+end
+
+match payment.status
+    success ->
+        step paymentRecorded:
+            store set
+                key = "order.{{order.id}}.payment"
+                value = payment
+        end
+
+    failed ->
+        step paymentFailed:
+            store set
+                key = "order.{{order.id}}.status"
+                value = "payment_failed"
+        end
+
+        email.send
+            to = order.customer_email
+            subject = "Payment Failed for Order {{order.id}}"
+            body = "We were unable to process your payment. Please update your payment method."
+        end
+
+        step releaseInventory:
+            loop item in order.items
+                http.post
+                    url = "https://inventory.company.com/api/release"
+                    body = {
+                        sku = item.sku
+                        quantity = item.quantity
+                        order_id = order.id
+                    }
+            end
+        end
+
+        stop
+end
+
+step shippingRates:
+    http.post
+        url = "https://shipping.company.com/api/rates"
+        body = {
+            items = order.items
+            destination = order.shipping_address
+            weight = order.total_weight
+        }
+end
+
+step selectedRate:
+    transform select.cheapestRate
+        rates = shippingRates
+        delivery_preference = order.delivery_preference
+end
+
+step shipment:
+    http.post
+        url = "https://shipping.company.com/api/create"
+        body = {
+            order_id = order.id
+            rate_id = selectedRate.id
+            items = order.items
+            destination = order.shipping_address
+        }
+end
+
+step shipmentSaved:
+    store set
+        key = "order.{{order.id}}.shipment"
+        value = shipment
+end
+
+parallel:
+
+    step confirmEmail:
+        email.send
+            to = order.customer_email
+            subject = "Order {{order.id}} Confirmed and Shipped"
+            body = "Your order has been shipped! Tracking: {{shipment.tracking_number}}"
+    end
+
+    step crmOrder:
+        crm.addNote
+            customer_id = order.customer_id
+            note = "Order {{order.id}} placed: ${{order.total}}, shipped via {{selectedRate.carrier}}"
+    end
+
+    step invoiceArchive:
+        storage.upload
+            bucket = "order-invoices"
+            file = {
+                order = order
+                payment = payment
+                shipment = shipment
+            }
+    end
+
+end
+
+step orderComplete:
+    store set
+        key = "order.{{order.id}}.status"
+        value = "completed"
+end
+
+step done:
+    emit
+        value = "order_complete"
+        metadata = {
+            order_id = order.id
+            tracking = shipment.tracking_number
+            total = order.total
+        }
+end
+
+end

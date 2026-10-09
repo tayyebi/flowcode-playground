@@ -103,14 +103,16 @@ func TestHandleRunReportsFailuresAs200(t *testing.T) {
 	}
 }
 
-// TestAllSamplesCompileAndRun mirrors upstream's tests/test_samples.sh: every
-// program the picker offers must work, or the playground ships a broken menu.
+// TestAllSamplesCompileAndRun checks every program the picker offers (and,
+// via the seed test, every project example file): all of them must work, or
+// the playground ships a broken menu.
 func TestAllSamplesCompileAndRun(t *testing.T) {
 	s := newTestServer(t)
 
-	dir := os.Getenv("FLOWCODE_SAMPLES_DIR")
+	// go test runs from server/, so the repo's examples/ sits one level up.
+	dir := os.Getenv("PLAYGROUND_EXAMPLES_DIR")
 	if dir == "" {
-		t.Skip("set FLOWCODE_SAMPLES_DIR to check the bundled samples")
+		dir = "../examples"
 	}
 	samples, err := loadSamples(dir)
 	if err != nil {

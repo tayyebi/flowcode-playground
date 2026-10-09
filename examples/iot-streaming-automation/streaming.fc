@@ -1,0 +1,209 @@
+use mqtt
+use http
+use ai
+use storage
+use email
+use crm
+
+workflow: IoTStreamingAutomation
+
+trigger:
+    mqtt.subscribe
+        topic = "factory/sensors/+"
+end
+
+step rawReading:
+    transform normalize.sensorEvent
+        input = payload
+end
+
+step readingSaved:
+    store set
+        key = "sensor.{{rawReading.device_id}}.latest"
+        value = rawReading
+end
+
+step history:
+    store get
+        key = "sensor.{{rawReading.device_id}}.history"
+end
+
+step updatedHistory:
+    transform append.timeseries
+        series = history
+        point = rawReading
+        max_points = 1000
+end
+
+step historySaved:
+    store set
+        key = "sensor.{{rawReading.device_id}}.history"
+        value = updatedHistory
+end
+
+step anomalyCheck:
+    ai.generate
+        model = "anomaly-detector-v2"
+        system = "You are an IoT anomaly detection agent. Given a time series and the latest reading, determine if the value is anomalous. Output severity (normal, warning, critical) and a short explanation."
+        input = {
+            history = updatedHistory
+            current = rawReading
+        }
+        schema = AnomalyResult
+end
+
+match anomalyCheck.severity
+    normal ->
+        step normalLog:
+            store set
+                key = "sensor.{{rawReading.device_id}}.status"
+                value = "normal"
+        end
+
+    warning ->
+        step warningState:
+            store set
+                key = "sensor.{{rawReading.device_id}}.status"
+                value = "warning"
+        end
+
+        step warningCount:
+            store get
+                key = "sensor.{{rawReading.device_id}}.warning_count"
+        end
+
+        step incrementedCount:
+            transform increment
+                value = warningCount
+                default = 0
+        end
+
+        step countSaved:
+            store set
+                key = "sensor.{{rawReading.device_id}}.warning_count"
+                value = incrementedCount
+        end
+
+        match incrementedCount
+            3 ->
+                step escalateWarning:
+                    http.post
+                        url = "https://ops.factory.com/api/alerts"
+                        body = {
+                            device_id = rawReading.device_id
+                            severity = "warning_repeated"
+                            count = incrementedCount
+                            latest = rawReading
+                            analysis = anomalyCheck.explanation
+                        }
+                end
+        end
+
+    critical ->
+        step criticalState:
+            store set
+                key = "sensor.{{rawReading.device_id}}.status"
+                value = "critical"
+        end
+
+        parallel:
+
+            step alertOps:
+                http.post
+                    url = "https://ops.factory.com/api/alerts"
+                    body = {
+                        device_id = rawReading.device_id
+                        severity = "critical"
+                        reading = rawReading
+                        analysis = anomalyCheck.explanation
+                    }
+            end
+
+            step notifyEmail:
+                email.send
+                    to = "factory-ops@company.com"
+                    subject = "CRITICAL: Sensor {{rawReading.device_id}} anomaly"
+                    body = "Device {{rawReading.device_id}} reported a critical anomaly: {{anomalyCheck.explanation}}"
+            end
+
+            step shutdownCommand:
+                mqtt.publish
+                    topic = "factory/commands/{{rawReading.device_id}}"
+                    payload = {
+                        action = "emergency_shutdown"
+                        reason = anomalyCheck.explanation
+                    }
+            end
+
+        end
+
+        step incidentCreated:
+            crm.addNote
+                customer_id = "factory-floor"
+                note = "Critical anomaly on {{rawReading.device_id}}: {{anomalyCheck.explanation}}"
+        end
+end
+
+step aggregateWindow:
+    transform window.aggregate
+        series = updatedHistory
+        window_size = 60
+        functions = ["mean", "max", "min", "stddev"]
+end
+
+step aggregateSaved:
+    store set
+        key = "sensor.{{rawReading.device_id}}.aggregate.1m"
+        value = aggregateWindow
+        ttl = 86400
+end
+
+step archiveBatch:
+    store get
+        key = "sensor.{{rawReading.device_id}}.batch_buffer"
+end
+
+step updatedBatch:
+    transform append.batch
+        buffer = archiveBatch
+        item = rawReading
+        max_size = 100
+end
+
+match updatedBatch.is_full
+    true ->
+        step archived:
+            storage.upload
+                bucket = "sensor-archive"
+                file = {
+                    device_id = rawReading.device_id
+                    batch = updatedBatch.items
+                    timestamp = rawReading.timestamp
+                }
+        end
+
+        step batchCleared:
+            store set
+                key = "sensor.{{rawReading.device_id}}.batch_buffer"
+                value = []
+        end
+
+    false ->
+        step batchUpdated:
+            store set
+                key = "sensor.{{rawReading.device_id}}.batch_buffer"
+                value = updatedBatch
+        end
+end
+
+step done:
+    emit
+        value = "sensor_event_processed"
+        metadata = {
+            device_id = rawReading.device_id
+            severity = anomalyCheck.severity
+            timestamp = rawReading.timestamp
+        }
+end
+
+end

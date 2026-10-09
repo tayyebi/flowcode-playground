@@ -1,0 +1,273 @@
+use http
+use email
+use storage
+use crm
+
+workflow: SaaSDataSyncEngine
+
+trigger:
+    cron "*/15 * * * *"
+end
+
+step config:
+    store get
+        key = "sync.config"
+end
+
+step systems:
+    transform list.syncSystems
+        config = config
+end
+
+step syncResults:
+    loop system in systems
+        step lastSync:
+            store get
+                key = "sync.{{system.id}}.last_run"
+        end
+
+        step fetchRemote:
+            http.get
+                url = system.api_url
+                headers = {
+                    Authorization = "******"
+                    If-Modified-Since = lastSync.timestamp
+                }
+        end
+
+        match fetchRemote.status_code
+            200 ->
+                step remoteData:
+                    transform normalize.apiResponse
+                        input = fetchRemote
+                        schema = system.schema
+                end
+
+            304 ->
+                step noChanges:
+                    store set
+                        key = "sync.{{system.id}}.last_run"
+                        value = {
+                            timestamp = now
+                            status = "no_changes"
+                        }
+                end
+
+                continue
+
+            else ->
+                step fetchError:
+                    store set
+                        key = "sync.{{system.id}}.errors"
+                        value = {
+                            timestamp = now
+                            status_code = fetchRemote.status_code
+                            body = fetchRemote.body
+                        }
+                end
+
+                continue
+        end
+
+        step localData:
+            store get
+                key = "sync.{{system.id}}.data"
+        end
+
+        step diff:
+            transform compute.diff
+                local = localData
+                remote = remoteData
+                key_field = system.primary_key
+        end
+
+        match diff.has_changes
+            false ->
+                step diffNoOp:
+                    store set
+                        key = "sync.{{system.id}}.last_run"
+                        value = {
+                            timestamp = now
+                            status = "no_diff"
+                        }
+                end
+
+                continue
+        end
+
+        step conflicts:
+            transform detect.conflicts
+                diff = diff
+                strategy = system.conflict_strategy
+        end
+
+        match conflicts.has_conflicts
+            true ->
+                match system.conflict_strategy
+                    manual ->
+                        step conflictNotify:
+                            email.send
+                                to = system.admin_email
+                                subject = "Sync conflict detected: {{system.name}}"
+                                body = "{{conflicts.count}} conflicts found. Records: {{conflicts.keys}}. Please resolve manually."
+                        end
+
+                        step conflictsSaved:
+                            store set
+                                key = "sync.{{system.id}}.conflicts"
+                                value = conflicts
+                        end
+
+                        continue
+
+                    remote_wins ->
+                        step resolvedRemote:
+                            transform resolve.conflicts
+                                conflicts = conflicts
+                                strategy = "remote_wins"
+                        end
+
+                    local_wins ->
+                        step resolvedLocal:
+                            transform resolve.conflicts
+                                conflicts = conflicts
+                                strategy = "local_wins"
+                        end
+
+                    merge ->
+                        step resolvedMerge:
+                            transform resolve.conflicts
+                                conflicts = conflicts
+                                strategy = "field_merge"
+                        end
+                end
+        end
+
+        step applyCreates:
+            loop record in diff.created
+                http.post
+                    url = "{{system.api_url}}/records"
+                    headers = {
+                        Authorization = "******"
+                    }
+                    body = record
+            end
+        end
+
+        step applyUpdates:
+            loop record in diff.updated
+                http.put
+                    url = "{{system.api_url}}/records/{{record.id}}"
+                    headers = {
+                        Authorization = "******"
+                    }
+                    body = record
+            end
+        end
+
+        step applyDeletes:
+            loop record in diff.deleted
+                http.delete
+                    url = "{{system.api_url}}/records/{{record.id}}"
+                    headers = {
+                        Authorization = "******"
+                    }
+            end
+        end
+
+        step localUpdated:
+            store set
+                key = "sync.{{system.id}}.data"
+                value = remoteData
+        end
+
+        step syncLog:
+            store set
+                key = "sync.{{system.id}}.last_run"
+                value = {
+                    timestamp = now
+                    status = "synced"
+                    created = diff.created_count
+                    updated = diff.updated_count
+                    deleted = diff.deleted_count
+                    conflicts_resolved = conflicts.count
+                }
+        end
+    end
+end
+
+step crossSystemSync:
+    store get
+        key = "sync.cross_system_mappings"
+end
+
+step propagations:
+    loop mapping in crossSystemSync
+        step sourceData:
+            store get
+                key = "sync.{{mapping.source_system}}.data"
+        end
+
+        step mappedData:
+            transform map.fields
+                data = sourceData
+                field_map = mapping.field_map
+                filter = mapping.filter
+        end
+
+        step pushToTarget:
+            http.post
+                url = "{{mapping.target_api_url}}/bulk"
+                headers = {
+                    Authorization = "******"
+                }
+                body = mappedData
+        end
+
+        step propagationLog:
+            store set
+                key = "sync.propagation.{{mapping.id}}.last_run"
+                value = {
+                    timestamp = now
+                    records_pushed = mappedData.count
+                    source = mapping.source_system
+                    target = mapping.target_system
+                }
+        end
+    end
+end
+
+parallel:
+
+    step summaryArchive:
+        storage.upload
+            bucket = "sync-logs"
+            file = {
+                timestamp = now
+                systems = syncResults
+                propagations = propagations
+            }
+    end
+
+    step healthCheck:
+        http.post
+            url = "https://monitoring.company.com/api/heartbeat"
+            body = {
+                service = "saas-data-sync"
+                status = "ok"
+                timestamp = now
+            }
+    end
+
+end
+
+step done:
+    emit
+        value = "sync_cycle_complete"
+        metadata = {
+            systems_synced = systems.count
+            propagations = propagations.count
+        }
+end
+
+end

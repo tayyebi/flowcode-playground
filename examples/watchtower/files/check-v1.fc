@@ -1,0 +1,53 @@
+use http
+use email
+
+workflow: WatchtowerCheck
+
+trigger:
+    webhook "/watchtower/check"
+end
+
+step sites:
+    emit
+        value = "example.com api.example.com cdn.example.com"
+end
+
+step probe:
+    loop site in sites
+        http.get
+            url = "https://{{site}}/health"
+    end
+end
+
+step verdict:
+    transform watchtower.verdict
+        input = probe
+end
+
+match verdict.status
+    down ->
+        step alert:
+            on_error retry
+            email.send
+                to = "oncall@example.com"
+                subject = "Watchtower: site down"
+                body = "health check failed, see the run trace"
+        end
+        stop
+    ok ->
+        step quiet:
+            store set
+                key = "watchtower.status"
+        end
+end
+
+step recorded:
+    store set
+        key = "watchtower.last_check"
+end
+
+step done:
+    emit
+        value = "check_complete"
+        metadata = verdict
+end

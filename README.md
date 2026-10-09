@@ -143,7 +143,7 @@ cd web && npm ci && npm run build && cd ..
 cd server && go build -o /tmp/playground . && cd ..
 FLOWCODE_FCC=../flowcode/fcc \
 FLOWCODE_RUNNER=/tmp/fcplay \
-FLOWCODE_SAMPLES_DIR=../flowcode/samples \
+PLAYGROUND_EXAMPLES_DIR=examples \
 PLAYGROUND_WORKDIR=/tmp/play \
 PLAYGROUND_WEB_ROOT=web/dist \
 PLAYGROUND_DB_PATH=/tmp/playground.db \
@@ -349,8 +349,15 @@ cd server && go test ./...                    # unit tests
 python3 scripts/smoke.py http://localhost:8033  # end-to-end, against a running instance
 ```
 
+To seed [Watchtower](docs/demo.md), the demo project that exercises every
+Phase A feature (files, versions, deployments, triggers, executions, KV):
+
+```sh
+python3 scripts/seed-watchtower.py http://localhost:8033 --reset
+```
+
 The Go end-to-end tests skip unless `FLOWCODE_FCC` and `FLOWCODE_RUNNER` point
-at real binaries; set `FLOWCODE_SAMPLES_DIR` as well to check every bundled
+at real binaries; set `PLAYGROUND_EXAMPLES_DIR` as well to check every bundled
 sample — see [Without Docker](#without-docker) for how to build them locally.
 There is no CI: run both of the above yourself before deploying, and run
 `scripts/smoke.py` against the real instance after `docker compose up -d`.

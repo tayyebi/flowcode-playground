@@ -132,20 +132,10 @@ func (s *Server) recordExecution(
 		fileName = f.Name
 	}
 
-	exec, err := s.store.RecordExecution(ctx, store.NewExecution{
+	return s.store.RecordRunWithKV(ctx, store.NewExecution{
 		ProjectID: projectID, FileID: fileID, FileName: fileName, VersionID: versionID,
 		Source: source, DeploymentID: deploymentID, TriggerID: triggerID,
 		StartedAt: started.UTC().Format(time.RFC3339), FinishedAt: finished.UTC().Format(time.RFC3339),
 		Result: result, Err: runErr,
 	})
-	if err != nil {
-		return nil, err
-	}
-
-	if result != nil && result.Run != nil {
-		for k, v := range store.ExtractStoreSets(result.Run.Stderr) {
-			s.store.UpsertKV(ctx, projectID, k, v, &exec.ID)
-		}
-	}
-	return exec, nil
 }

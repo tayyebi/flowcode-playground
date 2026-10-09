@@ -1,0 +1,201 @@
+use ai
+use http
+use storage
+use form
+use email
+use crm
+use memory
+
+workflow: MultiAgentContentPipeline
+
+trigger:
+    webhook "/content/request"
+end
+
+step request:
+    transform normalize.request
+        input = payload
+end
+
+step ctxSaved:
+    store set
+        key = "ctx.{{request.id}}"
+        value = request
+end
+
+step plan:
+    ai.generate
+        model = "planner-001"
+        system = "You are a content planning agent. Output a JSON plan with sections, goals, and required research."
+        input = request
+        schema = ContentPlan
+end
+
+step planSaved:
+    store set
+        key = "plan.{{request.id}}"
+        value = plan
+end
+
+step researchTasks:
+    loop section in plan.sections
+        ai.generate
+            model = "researcher-001"
+            system = "You are a research agent. Given a topic, produce bullet-point factual notes."
+            input = section.topic
+            schema = ResearchNotes
+    end
+end
+
+step researchSaved:
+    store set
+        key = "research.{{request.id}}"
+        value = researchTasks
+end
+
+step memoryContext:
+    memory.fetch
+        scope = "content"
+        key = request.customer_id
+end
+
+step draft:
+    ai.generate
+        model = "writer-002"
+        system = "You are a senior writer. Use plan, research, and memory to write a coherent draft."
+        input = {
+            request = request
+            plan = plan
+            research = researchTasks
+            memory = memoryContext
+        }
+        schema = DraftContent
+end
+
+step draftSaved:
+    store set
+        key = "draft.{{request.id}}"
+        value = draft
+end
+
+step review:
+    ai.generate
+        model = "reviewer-001"
+        system = "You are an editor. Critique the draft and propose concrete edits. Output suggestions and an improved version."
+        input = draft
+        schema = ReviewResult
+end
+
+step reviewSaved:
+    store set
+        key = "review.{{request.id}}"
+        value = review
+end
+
+step reviewForm:
+    form.render
+        form_id = "content_review"
+        data = {
+            draft = draft
+            review = review
+        }
+end
+
+step humanDecision:
+    await form.submit
+        form_id = "content_review"
+end
+
+match humanDecision.status
+    approved ->
+        step finalContent:
+            transform merge
+                draft = draft
+                edits = humanDecision.edits
+        end
+
+    changes_requested ->
+        step feedbackSaved:
+            memory.store
+                scope = "content-feedback"
+                key = request.customer_id
+                value = humanDecision.comments
+        end
+
+        email.send
+            to = request.requester_email
+            subject = "Content Needs Revisions"
+            body = "Editor requested changes. Please update the brief or provide more details."
+        end
+
+        stop
+end
+
+step channelVariant:
+    ai.generate
+        model = "publisher-001"
+        system = "You are a publishing agent. Adapt content to the target channel (blog, LinkedIn, email)."
+        input = {
+            content = finalContent
+            channel = request.channel
+        }
+        schema = ChannelContent
+end
+
+parallel:
+
+    step publish:
+        http.post
+            url = request.publish_url
+            body = channelVariant
+    end
+
+    step crmNote:
+        crm.addNote
+            customer_id = request.customer_id
+            note = "Content published for channel {{request.channel}}"
+    end
+
+    step archive:
+        storage.upload
+            bucket = "content-archive"
+            file = {
+                request = request
+                plan = plan
+                research = researchTasks
+                draft = draft
+                review = review
+                final = finalContent
+                channel = channelVariant
+            }
+    end
+
+end
+
+step finalState:
+    store set
+        key = "content.final.{{request.id}}"
+        value = {
+            publish = publish
+            crm = crmNote
+            archive = archive
+        }
+end
+
+step notify:
+    email.send
+        to = request.requester_email
+        subject = "Content Ready and Published"
+        body = "Your content for {{request.channel}} is live."
+end
+
+step done:
+    emit
+        value = "content_pipeline_complete"
+        metadata = {
+            request_id = request.id
+            channel = request.channel
+        }
+end
+
+end

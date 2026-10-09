@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// Sample is one program from flowcode's samples/ directory, served to the
+// Sample is one program from the repo's examples/ directory, served to the
 // picker with enough context that a reader knows what they're about to run.
 type Sample struct {
 	ID          string `json:"id"`
@@ -18,15 +18,17 @@ type Sample struct {
 	Source      string `json:"source"`
 }
 
-// loadSamples reads samples/<dir>/<name>.fc from the upstream layout, pairing
-// each program with the prose from its sibling README.md.
+// loadSamples reads examples/<dir>/<name>.fc, pairing each program with the
+// prose from its sibling README.md. Directories carrying a project.json
+// manifest are project examples — the seeder's business — and are skipped:
+// the picker offers single standalone programs, not whole projects.
 //
 // Read once at startup: the directory is baked into the image and never changes
 // under a running server, so re-reading per request would buy nothing.
 func loadSamples(root string) ([]Sample, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil, fmt.Errorf("read samples dir %s: %w", root, err)
+		return nil, fmt.Errorf("read examples dir %s: %w", root, err)
 	}
 
 	var samples []Sample
@@ -35,6 +37,10 @@ func loadSamples(root string) ([]Sample, error) {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
+
+		if _, err := os.Stat(filepath.Join(dir, "project.json")); err == nil {
+			continue
+		}
 
 		matches, err := filepath.Glob(filepath.Join(dir, "*.fc"))
 		if err != nil || len(matches) == 0 {
@@ -64,7 +70,7 @@ func loadSamples(root string) ([]Sample, error) {
 		return nil, fmt.Errorf("no samples found under %s", root)
 	}
 
-	// hello-world first — it is the one upstream calls "start here" — then
+	// hello-world first — its README calls it "start here" — then
 	// alphabetical, so the list is stable across rebuilds.
 	sort.Slice(samples, func(i, j int) bool {
 		if (samples[i].ID == "hello-world") != (samples[j].ID == "hello-world") {

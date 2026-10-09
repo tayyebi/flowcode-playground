@@ -18,6 +18,7 @@ import (
 	"github.com/tayyebi/flowcode-playground/server/internal/db"
 	"github.com/tayyebi/flowcode-playground/server/internal/engine"
 	"github.com/tayyebi/flowcode-playground/server/internal/scheduler"
+	"github.com/tayyebi/flowcode-playground/server/internal/seed"
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
 
@@ -34,6 +35,7 @@ type Server struct {
 	store         *store.Store
 	scheduler     *scheduler.Scheduler
 	sqlDB         *sql.DB
+	examplesDir   string
 }
 
 func main() {
@@ -49,6 +51,13 @@ func main() {
 	go srv.limiter.run(done)
 	go srv.deployLimiter.run(done)
 	go srv.scheduler.Run(done)
+
+	// Seed examples in the background so the server takes requests while it
+	// works — seeding compiles and runs every runnable file, which takes
+	// seconds, and nothing about the first request depends on its outcome.
+	if mode := env("PLAYGROUND_SEED_EXAMPLES", "auto"); mode != "0" && mode != "off" {
+		go srv.seedExamples(mode == "refresh")
+	}
 
 	httpServer := &http.Server{
 		Addr:    addr,
@@ -163,13 +172,45 @@ func newServerFromEnv() (*Server, error) {
 		sqlDB:         sqlDB,
 	}
 
-	samples, err := loadSamples(env("FLOWCODE_SAMPLES_DIR", "/opt/flowcode/samples"))
+	// The repo's own examples/ directory is the single home for all examples:
+	// plain samples for the picker and project examples for the seeder. The
+	// default fits local development (running from server/); the container's
+	// entrypoint points it at /src/examples explicitly.
+	s.examplesDir = env("PLAYGROUND_EXAMPLES_DIR", "../examples")
+	samples, err := loadSamples(s.examplesDir)
 	if err != nil {
 		return nil, err
 	}
 	s.samples = samples
 
 	return s, nil
+}
+
+// seedExamples loads the project examples and seeds any this database hasn't
+// recorded yet. Runs on its own goroutine at startup; every outcome (seeded,
+// adopted, skipped, failed) is logged so `docker compose logs` tells the story.
+func (s *Server) seedExamples(refresh bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	examples, err := seed.Load(s.examplesDir)
+	if err != nil {
+		log.Printf("seed: %v", err)
+		return
+	}
+	if len(examples) == 0 {
+		log.Print("seed: no project examples found (examples/ has no project.json manifests)")
+		return
+	}
+	opts := seed.Options{Refresh: refresh}
+	if refresh {
+		log.Printf("seed: refresh requested — re-seeding %d example(s)", len(examples))
+	}
+	if err := seed.Seed(ctx, s.store, s.engine, examples, opts); err != nil {
+		log.Printf("seed: finished with errors: %v", err)
+		return
+	}
+	log.Print("seed: done")
 }
 
 const maxOutputBytes = 64 * 1024

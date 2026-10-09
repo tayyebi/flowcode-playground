@@ -1,0 +1,102 @@
+use http
+use email
+use form
+use ai
+use crm
+use storage
+
+workflow: CustomerOnboarding
+
+trigger:
+    webhook "/onboarding/start"
+end
+
+step rawDoc:
+    http.get
+        url = "https://uploads.company.com/docs/{{payload.doc_id}}"
+end
+
+step extracted:
+    ai.extract
+        model = "gpt-vision-pro"
+        input = rawDoc
+        schema = CustomerProfile
+end
+
+step validated:
+    transform validate.customerProfile
+        input = extracted
+end
+
+step reviewForm:
+    form.render
+        form_id = "customer_review"
+        data = validated
+end
+
+step reviewed:
+    await form.submit
+        form_id = "customer_review"
+end
+
+match reviewed.status
+    approved ->
+        step approvedData:
+            transform merge
+                original = validated
+                corrections = reviewed.corrections
+        end
+
+    rejected ->
+        email.send
+            to = "ops@company.com"
+            subject = "Customer Onboarding Rejected"
+            body = "Reviewer rejected onboarding for {{validated.name}}"
+        end
+
+        stop
+end
+
+step uploadedDocs:
+    loop doc in validated.documents
+        storage.upload
+            bucket = "customer-docs"
+            file = doc
+    end
+end
+
+parallel:
+
+    step crmRecord:
+        crm.createCustomer
+            data = approvedData
+    end
+
+    step welcomeEmail:
+        email.send
+            to = approvedData.email
+            subject = "Welcome to Our Platform"
+            body = "Your onboarding is complete"
+    end
+
+end
+
+step combined:
+    transform combine
+        crm = crmRecord
+        email = welcomeEmail
+end
+
+step saved:
+    store set
+        key = "onboarding.{{approvedData.id}}"
+        value = combined
+end
+
+step done:
+    emit
+        value = "onboarding_complete"
+        metadata = combined
+end
+
+end

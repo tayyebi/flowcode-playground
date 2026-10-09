@@ -1,0 +1,12 @@
+workflow: HelloWorld
+
+step greeting:
+    emit
+        value = "hello, world"
+end
+
+step saved:
+    store set
+        key = "greeting"
+        value = greeting
+end

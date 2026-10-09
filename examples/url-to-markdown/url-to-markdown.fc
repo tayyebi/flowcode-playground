@@ -1,0 +1,92 @@
+use form
+use http
+use ai
+use storage
+
+workflow: UrlToMarkdown
+
+trigger:
+    webhook "/url-to-markdown/start"
+end
+
+step askForUrl:
+    form.render
+        form_id = "url_input"
+        title = "Save a page as Markdown"
+        fields = "url"
+end
+
+step submittedUrl:
+    await form.submit
+        form_id = "url_input"
+end
+
+step validatedUrl:
+    transform validate.url
+        input = submittedUrl.url
+end
+
+match validatedUrl.status
+    invalid ->
+        step rejected:
+            emit
+                value = "invalid_url"
+        end
+
+    valid ->
+        step fetchedPage:
+            http.get
+                url = "{{validatedUrl.url}}"
+                accept = "text/html"
+
+            on_error
+                retry = 3
+                timeout = 30
+        end
+end
+
+step strippedHtml:
+    transform html.strip
+        input = fetchedPage
+        drop = "script,style,nav,header,footer,aside,form,iframe,noscript"
+end
+
+step markdown:
+    ai.generate
+        model = "html-to-markdown"
+        input = strippedHtml
+        format = "markdown"
+end
+
+step cleanedMarkdown:
+    transform markdown.tidy
+        input = markdown
+end
+
+step document:
+    transform combine
+        source_url = validatedUrl
+        body = cleanedMarkdown
+end
+
+step archived:
+    storage.upload
+        bucket = "page-archive"
+        key = "{{validatedUrl.host}}.md"
+        file = cleanedMarkdown
+        content_type = "text/markdown"
+end
+
+step saved:
+    store set
+        key = "markdown.{{validatedUrl.host}}"
+        value = document
+end
+
+step done:
+    emit
+        value = "markdown_saved"
+        metadata = document
+end
+
+end

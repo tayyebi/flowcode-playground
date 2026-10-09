@@ -1,0 +1,266 @@
+use http
+use email
+use form
+use storage
+use crm
+
+workflow: ApprovalChainWithEscalation
+
+trigger:
+    webhook "/approval/submit"
+end
+
+step request:
+    transform normalize.approvalRequest
+        input = payload
+end
+
+step requestSaved:
+    store set
+        key = "approval.{{request.id}}"
+        value = request
+end
+
+step slaDeadline:
+    transform compute.deadline
+        submitted_at = request.submitted_at
+        sla_hours = request.sla_hours
+end
+
+step slaSaved:
+    store set
+        key = "approval.{{request.id}}.sla"
+        value = slaDeadline
+        ttl = slaDeadline.remaining_seconds
+end
+
+step tier:
+    transform resolve.approverTier
+        amount = request.amount
+        department = request.department
+        tiers = [
+            { max = 1000, approver = "team_lead", role = "Team Lead" },
+            { max = 10000, approver = "department_head", role = "Department Head" },
+            { max = 100000, approver = "vp_finance", role = "VP Finance" },
+            { max = -1, approver = "cfo", role = "CFO" }
+        ]
+end
+
+step currentApprover:
+    store set
+        key = "approval.{{request.id}}.current_approver"
+        value = tier.approver
+end
+
+step approverNotified:
+    email.send
+        to = tier.approver_email
+        subject = "Approval Required: {{request.title}} (${{request.amount}})"
+        body = "You have a pending approval request. SLA deadline: {{slaDeadline.deadline}}. Please review at your earliest convenience."
+end
+
+step approvalForm:
+    form.render
+        form_id = "approval_decision"
+        data = {
+            request = request
+            tier = tier
+            sla = slaDeadline
+        }
+end
+
+step decision:
+    await form.submit
+        form_id = "approval_decision"
+        timeout = slaDeadline.remaining_seconds
+end
+
+match decision.status
+    approved ->
+        step approvalRecorded:
+            store set
+                key = "approval.{{request.id}}.decisions.{{tier.level}}"
+                value = {
+                    approver = tier.approver
+                    status = "approved"
+                    comments = decision.comments
+                    timestamp = decision.timestamp
+                }
+        end
+
+        match tier.requires_next_tier
+            true ->
+                step nextTier:
+                    transform resolve.nextTier
+                        current = tier
+                end
+
+                step escalatedNotify:
+                    email.send
+                        to = nextTier.approver_email
+                        subject = "Escalated Approval: {{request.title}} (${{request.amount}})"
+                        body = "Approved by {{tier.role}}. Your approval is now required. SLA: {{slaDeadline.deadline}}."
+                end
+
+                step nextForm:
+                    form.render
+                        form_id = "approval_decision"
+                        data = {
+                            request = request
+                            tier = nextTier
+                            sla = slaDeadline
+                            previous_approvals = decision
+                        }
+                end
+
+                step nextDecision:
+                    await form.submit
+                        form_id = "approval_decision"
+                        timeout = slaDeadline.remaining_seconds
+                end
+
+                match nextDecision.status
+                    approved ->
+                        step finalApproval:
+                            store set
+                                key = "approval.{{request.id}}.status"
+                                value = "fully_approved"
+                        end
+
+                    rejected ->
+                        step nextRejection:
+                            store set
+                                key = "approval.{{request.id}}.status"
+                                value = "rejected_at_escalation"
+                        end
+
+                        email.send
+                            to = request.requester_email
+                            subject = "Approval Rejected at Escalation"
+                            body = "Your request was rejected by {{nextTier.role}}: {{nextDecision.comments}}"
+                        end
+
+                        stop
+                end
+
+            false ->
+                step singleApproval:
+                    store set
+                        key = "approval.{{request.id}}.status"
+                        value = "approved"
+                end
+        end
+
+    rejected ->
+        step rejectionRecorded:
+            store set
+                key = "approval.{{request.id}}.status"
+                value = "rejected"
+        end
+
+        email.send
+            to = request.requester_email
+            subject = "Approval Request Rejected"
+            body = "Your request '{{request.title}}' was rejected by {{tier.role}}: {{decision.comments}}"
+        end
+
+        stop
+
+    timeout ->
+        step slaBreached:
+            store set
+                key = "approval.{{request.id}}.sla_status"
+                value = "breached"
+        end
+
+        step escalationTarget:
+            transform resolve.escalationManager
+                department = request.department
+                current_approver = tier.approver
+        end
+
+        email.send
+            to = escalationTarget.email
+            subject = "SLA BREACH: Approval pending for {{request.title}}"
+            body = "The approval request has exceeded its SLA of {{request.sla_hours}} hours. Original approver: {{tier.role}}. Please take action immediately."
+        end
+
+        step escalationForm:
+            form.render
+                form_id = "escalation_decision"
+                data = {
+                    request = request
+                    original_approver = tier
+                    sla_breached = true
+                }
+        end
+
+        step escalationDecision:
+            await form.submit
+                form_id = "escalation_decision"
+        end
+
+        match escalationDecision.status
+            approved ->
+                step escalationApproved:
+                    store set
+                        key = "approval.{{request.id}}.status"
+                        value = "approved_via_escalation"
+                end
+
+            rejected ->
+                step escalationRejected:
+                    store set
+                        key = "approval.{{request.id}}.status"
+                        value = "rejected_via_escalation"
+                end
+
+                email.send
+                    to = request.requester_email
+                    subject = "Approval Rejected After Escalation"
+                    body = "Your request was rejected after SLA escalation."
+                end
+
+                stop
+        end
+end
+
+parallel:
+
+    step auditLog:
+        storage.upload
+            bucket = "approval-audit"
+            file = {
+                request = request
+                decisions = decision
+                sla = slaDeadline
+                final_status = "completed"
+            }
+    end
+
+    step crmUpdate:
+        crm.addNote
+            customer_id = request.department
+            note = "Approval {{request.id}} completed: {{request.title}} (${{request.amount}})"
+    end
+
+    step requesterNotified:
+        email.send
+            to = request.requester_email
+            subject = "Approval Complete: {{request.title}}"
+            body = "Your request has been fully approved."
+    end
+
+end
+
+step done:
+    emit
+        value = "approval_complete"
+        metadata = {
+            request_id = request.id
+            amount = request.amount
+            final_status = "approved"
+        }
+end
+
+end

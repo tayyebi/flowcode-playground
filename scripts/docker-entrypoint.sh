@@ -39,7 +39,7 @@ cc -std=c11 -Wall -Wextra -Werror -pedantic -O2 -I"$FLOWCODE_SRC/include" \
 cp "$FLOWCODE_SRC/fcc" "$FLOWCODE_SRC/flowcode" "$BIN_DIR/"
 
 echo "==> flowcode: smoke-checking the trace driver"
-"$FLOWCODE_SRC/fcc" "$FLOWCODE_SRC/samples/hello-world/hello.fc" /tmp/hello.fcb
+"$FLOWCODE_SRC/fcc" /src/examples/hello-world/hello.fc /tmp/hello.fcb
 "$BIN_DIR/fcplay" /tmp/hello.fcb 2>&1 | grep -q 'vm completed successfully'
 # hello.fc stores under "greeting": the server's KV log is parsed out of this
 # dump, so a drifted format must fail the build, not silently empty the log.
@@ -57,7 +57,7 @@ export GOCACHE="$CACHE_DIR/go/build"
 export PORT="${PORT:-8033}"
 export FLOWCODE_FCC="$BIN_DIR/fcc"
 export FLOWCODE_RUNNER="$BIN_DIR/fcplay"
-export FLOWCODE_SAMPLES_DIR="$FLOWCODE_SRC/samples"
+export PLAYGROUND_EXAMPLES_DIR="/src/examples"
 export PLAYGROUND_WORKDIR="/run/play"
 export PLAYGROUND_WEB_ROOT="/src/web/dist"
 export PLAYGROUND_DB_PATH="${PLAYGROUND_DB_PATH:-/data/playground.db}"
