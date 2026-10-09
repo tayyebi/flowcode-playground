@@ -23,7 +23,6 @@ import (
 
 // Server holds the configuration and the state that outlives a request.
 type Server struct {
-	WebRoot    string
 	TrustProxy bool
 	AdminToken string
 
@@ -141,7 +140,6 @@ func newServerFromEnv() (*Server, error) {
 	}
 
 	s := &Server{
-		WebRoot:       env("PLAYGROUND_WEB_ROOT", "/srv/web"),
 		TrustProxy:    env("TRUST_PROXY", "") == "1",
 		AdminToken:    adminToken,
 		engine:        eng,
@@ -160,6 +158,34 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("GET /static/style.css", handleStaticCSS)
+
+	// Server-rendered pages. Every action is a plain form POST.
+	page := s.requireAdminPage
+	mux.HandleFunc("/", s.handleRoot)
+	mux.HandleFunc("GET /login", s.handleLoginPage)
+	mux.HandleFunc("POST /login", s.handleLoginPost)
+	mux.HandleFunc("POST /logout", s.handleLogoutPost)
+
+	mux.HandleFunc("GET /projects", page(s.handleProjectsPage))
+	mux.HandleFunc("POST /projects", page(s.handleProjectCreatePage))
+	mux.HandleFunc("GET /projects/{id}", page(s.handleProjectPage))
+	mux.HandleFunc("POST /projects/{id}/update", page(s.handleProjectUpdatePage))
+	mux.HandleFunc("POST /projects/{id}/delete", page(s.handleProjectDeletePage))
+	mux.HandleFunc("POST /projects/{id}/files/new", page(s.handleNewFilePage))
+	mux.HandleFunc("POST /projects/{id}/files/{name}/save", page(s.handleSaveFilePage))
+	mux.HandleFunc("POST /projects/{id}/files/{name}/run", page(s.handleRunFilePage))
+	mux.HandleFunc("POST /projects/{id}/files/{name}/delete", page(s.handleDeleteFilePage))
+	mux.HandleFunc("POST /projects/{id}/versions", page(s.handleCreateVersionPage))
+	mux.HandleFunc("POST /projects/{id}/versions/{number}/restore", page(s.handleRestoreVersionPage))
+	mux.HandleFunc("POST /projects/{id}/deployments", page(s.handleCreateDeploymentPage))
+	mux.HandleFunc("POST /projects/{id}/deployments/{depId}/toggle", page(s.handleToggleDeploymentPage))
+	mux.HandleFunc("POST /projects/{id}/deployments/{depId}/delete", page(s.handleDeleteDeploymentPage))
+	mux.HandleFunc("POST /projects/{id}/triggers", page(s.handleCreateTriggerPage))
+	mux.HandleFunc("POST /projects/{id}/triggers/{trigId}/toggle", page(s.handleToggleTriggerPage))
+	mux.HandleFunc("POST /projects/{id}/triggers/{trigId}/delete", page(s.handleDeleteTriggerPage))
+	mux.HandleFunc("GET /projects/{id}/executions/{execId}", page(s.handleExecutionPage))
+	mux.HandleFunc("POST /projects/{id}/kv/{key}/delete", page(s.handleDeleteKVPage))
 
 	mux.HandleFunc("POST /api/admin/login", s.handleAdminLogin)
 	mux.HandleFunc("POST /api/admin/logout", s.handleAdminLogout)
@@ -202,32 +228,7 @@ func (s *Server) routes() http.Handler {
 	// whoever has its URL.
 	mux.HandleFunc("/deploy/{slug}", s.deployLimiter.middleware(s.TrustProxy, s.handleDeploy))
 
-	// Static assets last, on the catch-all, so the API routes win.
-	mux.Handle("/", s.staticHandler())
-
 	return logRequests(mux)
-}
-
-// staticHandler serves the built frontend, falling back to index.html so a
-// deep link or a reloaded permalink lands on the app rather than a 404.
-func (s *Server) staticHandler() http.Handler {
-	fs := http.FileServer(http.Dir(s.WebRoot))
-	index := filepath.Join(s.WebRoot, "index.html")
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := filepath.Join(s.WebRoot, filepath.Clean("/"+r.URL.Path))
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			// Vite fingerprints asset filenames, so they can be cached hard;
-			// index.html must not be, or a redeploy serves stale asset refs.
-			if r.URL.Path != "/" && r.URL.Path != "/index.html" {
-				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			}
-			fs.ServeHTTP(w, r)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeFile(w, r, index)
-	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

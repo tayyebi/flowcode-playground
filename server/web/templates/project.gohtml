@@ -1,0 +1,256 @@
+{{template "top.gohtml" .}}
+
+<div class="page-head">
+  <h1>{{.P.Name}}</h1>
+  <span class="muted slug">{{.P.Slug}}</span>
+</div>
+
+<div class="workspace">
+  <aside class="files">
+    <h2>Files</h2>
+    {{if .Files}}
+    <ul class="file-list">
+      {{ $pid := .P.ID }}{{ $sel := .Selected }}
+      {{range .Files}}
+      <li class="{{if and $sel (eq .Name $sel.Name)}}sel{{end}}">
+        <a href="/projects/{{$pid}}?file={{.Name | urlquery}}">{{.Name}}</a>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="note">No files yet.</p>
+    {{end}}
+    <form method="post" action="/projects/{{.P.ID}}/files/new" class="row-form">
+      <input name="name" placeholder="new-file.fc" required />
+      <button type="submit" class="btn btn-secondary btn-small">Add file</button>
+    </form>
+
+    <form method="post" action="/projects/{{.P.ID}}/update" class="row-form meta-form">
+      <input name="name" value="{{.P.Name}}" required />
+      <input name="description" value="{{.P.Description}}" placeholder="description" />
+      <button type="submit" class="btn btn-secondary btn-small">Rename</button>
+    </form>
+    <form method="post" action="/projects/{{.P.ID}}/delete" class="inline-form">
+      <button type="submit" class="btn btn-danger btn-small">Delete project</button>
+    </form>
+  </aside>
+
+  <section class="editor">
+    {{with .Selected}}
+    <form method="post" action="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/save">
+      <textarea name="content" rows="24" spellcheck="false" class="source">{{.Content}}</textarea>
+      <div class="row-actions">
+        <button type="submit" class="btn btn-secondary">Save</button>
+        <span class="muted">{{.Name}} · updated {{.UpdatedAt}}</span>
+      </div>
+    </form>
+    <div class="row-actions">
+      <form method="post" action="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/run" class="inline-form">
+        <button type="submit" class="btn btn-primary">Run {{.Name}}</button>
+      </form>
+      <form method="post" action="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/delete" class="inline-form">
+        <button type="submit" class="btn btn-danger btn-small">Delete file</button>
+      </form>
+    </div>
+    {{else}}
+    <p class="note">Add a file to get started.</p>
+    {{end}}
+  </section>
+</div>
+
+{{with .Result}}
+<section class="result">
+  <h2>Result <span class="muted">· execution #{{.ExecutionID}}</span></h2>
+
+  {{if .Compile.Diagnostics}}
+  <h3>Diagnostics</h3>
+  <ul class="diagnostics">
+    {{range .Compile.Diagnostics}}
+    <li class="diagnostic diagnostic-{{.Level}}">
+      <span class="diagnostic-level">{{.Level}}</span> line {{.Line}}: {{.Message}}
+    </li>
+    {{end}}
+  </ul>
+  {{end}}
+
+  {{if .Bytecode}}
+  <h3>Bytecode <span class="muted">· {{.Bytecode.InstructionCount}} instructions, {{.Bytecode.SizeBytes}} bytes</span></h3>
+  <table class="bytecode">
+    <thead><tr><th>#</th><th>Opcode</th><th>Arg</th></tr></thead>
+    <tbody>
+      {{range .Bytecode.Instructions}}
+      <tr id="i{{.Index}}">
+        <td class="num">{{.Index}}</td>
+        <td class="opcode">{{.Opcode}}</td>
+        <td class="arg">{{.Arg}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  {{with .Run}}
+  <h3>Trace</h3>
+  <pre class="trace">{{.Stderr}}</pre>
+  {{if .TimedOut}}<p class="flash flash-err">The run was killed by the wall-clock timeout.</p>{{end}}
+  {{end}}
+</section>
+{{end}}
+
+<section id="versions" class="panel-section">
+  <h2>Versions</h2>
+  <form method="post" action="/projects/{{.P.ID}}/versions" class="row-form">
+    <input name="label" placeholder="label, e.g. v1" required />
+    <button type="submit" class="btn btn-secondary btn-small">Save version</button>
+  </form>
+  {{if .Versions}}
+  <table class="list">
+    <thead><tr><th>#</th><th>Label</th><th>Saved</th><th></th></tr></thead>
+    <tbody>
+      {{range .Versions}}
+      <tr>
+        <td class="num">{{.Number}}</td>
+        <td>{{.Label}}</td>
+        <td class="muted">{{.CreatedAt}}</td>
+        <td>
+          <form method="post" action="/projects/{{$.P.ID}}/versions/{{.Number}}/restore" class="inline-form">
+            <button type="submit" class="btn btn-secondary btn-small">Restore</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="note">No versions saved yet.</p>
+  {{end}}
+</section>
+
+<section id="deployments" class="panel-section">
+  <h2>Deployments</h2>
+  <form method="post" action="/projects/{{.P.ID}}/deployments" class="row-form">
+    <select name="fileName" required>
+      {{range .Files}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+    </select>
+    <button type="submit" class="btn btn-secondary btn-small">Create deployment</button>
+  </form>
+  {{if .Deployments}}
+  <ul class="item-list">
+    {{range .Deployments}}
+    <li class="item">
+      <code><a href="/deploy/{{.Slug}}">/deploy/{{.Slug}}</a></code>
+      <span class="muted">{{.FileName}}</span>
+      <span class="tag {{if .Enabled}}tag-ok{{else}}tag-muted{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+      <span class="item-actions">
+        <form method="post" action="/projects/{{$.P.ID}}/deployments/{{.ID}}/toggle" class="inline-form">
+          <button type="submit" class="btn btn-secondary btn-small">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+        </form>
+        <form method="post" action="/projects/{{$.P.ID}}/deployments/{{.ID}}/delete" class="inline-form">
+          <button type="submit" class="btn btn-danger btn-small">Delete</button>
+        </form>
+      </span>
+    </li>
+    {{end}}
+  </ul>
+  <p class="note">Phase A: a deploy URL re-runs the file's workflow and ignores
+  the request — see the README before relying on it.</p>
+  {{else}}
+  <p class="note">No deployments.</p>
+  {{end}}
+</section>
+
+<section id="triggers" class="panel-section">
+  <h2>Triggers</h2>
+  <form method="post" action="/projects/{{.P.ID}}/triggers" class="row-form">
+    <select name="fileName" required>
+      {{range .Files}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+    </select>
+    <select name="scheduleType">
+      <option value="interval">every</option>
+      <option value="daily">daily at (UTC)</option>
+    </select>
+    <input name="intervalSeconds" type="number" min="1" placeholder="seconds" />
+    <input name="dailyTimeUTC" placeholder="HH:MM" />
+    <button type="submit" class="btn btn-secondary btn-small">Create trigger</button>
+  </form>
+  {{if .Triggers}}
+  <table class="list">
+    <thead><tr><th>File</th><th>Schedule</th><th>Next run</th><th>Last run</th><th></th></tr></thead>
+    <tbody>
+      {{range .Triggers}}
+      <tr>
+        <td>{{.FileName}}</td>
+        <td>
+          {{if .IntervalSeconds}}every {{.IntervalSeconds}}s{{end}}
+          {{if .DailyTimeUTC}}daily at {{.DailyTimeUTC}} UTC{{end}}
+          <span class="tag {{if .Enabled}}tag-ok{{else}}tag-muted{{end}}">{{if .Enabled}}on{{else}}off{{end}}</span>
+        </td>
+        <td class="muted">{{.NextRunAt}}</td>
+        <td class="muted">{{.LastRunAt}}</td>
+        <td>
+          <form method="post" action="/projects/{{$.P.ID}}/triggers/{{.ID}}/toggle" class="inline-form">
+            <button type="submit" class="btn btn-secondary btn-small">{{if .Enabled}}Pause{{else}}Resume{{end}}</button>
+          </form>
+          <form method="post" action="/projects/{{$.P.ID}}/triggers/{{.ID}}/delete" class="inline-form">
+            <button type="submit" class="btn btn-danger btn-small">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="note">No triggers.</p>
+  {{end}}
+</section>
+
+<section id="executions" class="panel-section">
+  <h2>Recent executions</h2>
+  {{if .Executions}}
+  <table class="list">
+    <thead><tr><th>#</th><th>File</th><th>Source</th><th>Started</th><th>Compile</th><th>Run</th><th></th></tr></thead>
+    <tbody>
+      {{range .Executions}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.FileName}}</td>
+        <td><span class="tag tag-{{.Source}}">{{.Source}}</span></td>
+        <td class="muted">{{.StartedAt}}</td>
+        <td>{{with .CompileExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{with .RunExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td><a href="/projects/{{$.P.ID}}/executions/{{.ID}}">trace</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="note">Nothing has run yet.</p>
+  {{end}}
+</section>
+
+<section id="kv" class="panel-section">
+  <h2>KV log <span class="muted">· write-side only, see the README</span></h2>
+  {{if .KV}}
+  <table class="list">
+    <thead><tr><th>Key</th><th>Value</th><th>Updated</th><th></th></tr></thead>
+    <tbody>
+      {{range .KV}}
+      <tr>
+        <td><code>{{.Key}}</code></td>
+        <td><code class="wrap">{{.Value}}</code></td>
+        <td class="muted">{{.UpdatedAt}}</td>
+        <td>
+          <form method="post" action="/projects/{{$.P.ID}}/kv/{{.Key | urlquery}}/delete" class="inline-form">
+            <button type="submit" class="btn btn-danger btn-small">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="note">No store-set keys recorded yet.</p>
+  {{end}}
+</section>
+
+{{template "bottom.gohtml" .}}

@@ -1,7 +1,3 @@
-# Frontend
-web/node_modules/
-web/dist/
-
 # Go build output. `go build ./...` names the binary after the directory, and
 # `go build -o playground` is what scripts/docker-entrypoint.sh and the
 # README use.

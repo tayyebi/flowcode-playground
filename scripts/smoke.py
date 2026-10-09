@@ -57,7 +57,8 @@ def request_json(base: str, method: str, path: str, body: dict | None = None, *,
     )
     try:
         with urllib.request.urlopen(req) as response:
-            return response.status, json.load(response)
+            raw = response.read()
+            return response.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as err:
         raw = err.read()
         try:

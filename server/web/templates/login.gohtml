@@ -1,0 +1,11 @@
+{{template "top.gohtml" .}}
+
+<h1>Log in</h1>
+{{if .BadToken}}<p class="flash flash-err">Incorrect token.</p>{{end}}
+<form method="post" action="/login" class="card login-card">
+  <p>This server is gated by a shared admin token. Paste it to continue.</p>
+  <input type="password" name="token" placeholder="admin token" required autofocus />
+  <button type="submit" class="btn btn-primary">Log in</button>
+</form>
+
+{{template "bottom.gohtml" .}}

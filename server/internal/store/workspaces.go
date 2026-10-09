@@ -54,9 +54,9 @@ type WorkspaceMember struct {
 // ProjectShare grants one member a role on one project. No share row means
 // the member's effective role falls back to their workspace role.
 type ProjectShare struct {
-	ProjectID int64 `json:"projectId"`
-	UserID    int64 `json:"userId"`
-	Role      Role  `json:"role"`
+	ProjectID int64  `json:"projectId"`
+	UserID    int64  `json:"userId"`
+	Role      Role   `json:"role"`
 	Email     string `json:"email"`
 	Name      string `json:"name"`
 }

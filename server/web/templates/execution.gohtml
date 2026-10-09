@@ -1,0 +1,28 @@
+{{template "top.gohtml" .}}
+
+<div class="page-head">
+  <h1>Execution #{{.Exec.ID}}</h1>
+  <span class="muted"><a href="/projects/{{.P.ID}}">back to {{.P.Name}}</a></span>
+</div>
+
+<table class="list meta">
+  <tr><th>File</th><td>{{.Exec.FileName}}</td></tr>
+  <tr><th>Source</th><td><span class="tag tag-{{.Exec.Source}}">{{.Exec.Source}}</span></td></tr>
+  <tr><th>Started</th><td>{{.Exec.StartedAt}}</td></tr>
+  <tr><th>Finished</th><td>{{.Exec.FinishedAt}}</td></tr>
+  {{with .Exec.DurationMs}}<tr><th>Duration</th><td>{{.}} ms</td></tr>{{end}}
+  {{if .Exec.TimedOut}}<tr><th></th><td class="flash flash-err">killed by the wall-clock timeout</td></tr>{{end}}
+  {{if .Exec.Error}}<tr><th>Error</th><td class="flash flash-err">{{.Exec.Error}}</td></tr>{{end}}
+</table>
+
+{{if .Exec.CompileStderr}}
+<h2>Compile output</h2>
+<pre class="trace">{{.Exec.CompileStderr}}</pre>
+{{end}}
+
+{{if .Exec.RunStderr}}
+<h2>Trace</h2>
+<pre class="trace">{{.Exec.RunStderr}}</pre>
+{{end}}
+
+{{template "bottom.gohtml" .}}

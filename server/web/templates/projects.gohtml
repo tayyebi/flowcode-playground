@@ -1,0 +1,38 @@
+{{template "top.gohtml" .}}
+
+<div class="page-head">
+  <h1>Projects</h1>
+</div>
+
+<form method="post" action="/projects" class="card row-form">
+  <input name="name" placeholder="project name" required />
+  <input name="description" placeholder="description (optional)" />
+  <button type="submit" class="btn btn-primary">Create project</button>
+</form>
+
+{{if .Projects}}
+<table class="list">
+  <thead>
+    <tr><th>Name</th><th>Description</th><th>Updated</th><th></th></tr>
+  </thead>
+  <tbody>
+    {{range .Projects}}
+    <tr>
+      <td><a href="/projects/{{.ID}}">{{.Name}}</a></td>
+      <td class="muted">{{.Description}}</td>
+      <td class="muted">{{.UpdatedAt}}</td>
+      <td>
+        <form method="post" action="/projects/{{.ID}}/delete" class="inline-form">
+          <button type="submit" class="btn btn-danger btn-small">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="note">No projects yet. Create one above — or paste a workflow from the
+<a href="https://github.com/tayyebi/flowcode.wiki" rel="noreferrer">examples in the wiki</a>.</p>
+{{end}}
+
+{{template "bottom.gohtml" .}}

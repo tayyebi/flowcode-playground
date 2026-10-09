@@ -1,9 +1,9 @@
 #!/bin/sh
 # Runs inside a plain golang:1.25-alpine container on every `docker compose
 # up -d`. There is no Dockerfile and no prebuilt image: this script installs
-# the rest of the toolchain, builds FlowCode + the frontend + the server, and
-# then execs the result. Everything it touches — apk cache, FlowCode's git
-# clone, Go's module/build cache, npm's cache, the compiled binaries — lives
+# the rest of the toolchain, builds FlowCode and the server, and then execs
+# the result. Everything it touches — apk cache, FlowCode's git clone, Go's
+# module/build cache, the compiled binaries — lives
 # under $CACHE_DIR, which is inside the repo bind-mount (/src), so it's on
 # the host and survives `docker compose down` / a fresh `git pull`. A repeat
 # run only rebuilds what actually changed; nothing gets redownloaded.
@@ -18,7 +18,7 @@ FLOWCODE_REF="${FLOWCODE_REF:-main}"
 mkdir -p "$BIN_DIR" "$CACHE_DIR/go/pkg" "$CACHE_DIR/go/build" "$CACHE_DIR/npm"
 
 echo "==> apk: installing build toolchain (cache persisted on host)"
-apk add --update build-base nodejs npm git >/dev/null
+apk add --update build-base git >/dev/null
 
 echo "==> flowcode: syncing $FLOWCODE_REPO @ $FLOWCODE_REF"
 if [ -d "$FLOWCODE_SRC/.git" ]; then
@@ -58,10 +58,6 @@ EOF
 # hello.fc stores under "greeting": the server's KV log is parsed out of this
 # dump, so a drifted format must fail the build, not silently empty the log.
 "$BIN_DIR/fcplay" /tmp/hello.fcb 2>&1 | grep -q 'store set key = "greeting" value = "hello, world"'
-
-echo "==> web: building frontend"
-export npm_config_cache="$CACHE_DIR/npm"
-(cd /src/web && npm ci --prefer-offline && npm run build)
 
 echo "==> server: building"
 export GOPATH="$CACHE_DIR/go"

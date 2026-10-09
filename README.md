@@ -15,8 +15,8 @@ Then open <http://localhost:8033>.
 
 ## Using it
 
-The dashboard (`/#/dashboard`) lists your projects. A project is a saved,
-named workspace: multiple independently-runnable `.fc`
+The [dashboard](http://localhost:8033/projects) lists your projects. A
+project is a saved, named workspace: multiple independently-runnable `.fc`
 files, "Save Version" snapshots, deployments, and time-driven triggers. See
 [Projects, deployments, triggers, and the KV
 log](#projects-deployments-triggers-and-the-kv-log) below for the important
@@ -32,11 +32,11 @@ with its sample picker and shareable permalinks.)
 **Three views of the same program**, because compiling and running FlowCode
 produces three genuinely different kinds of information:
 
-| Tab | Shows |
+| Section | Shows |
 |---|---|
 | **Trace** | The VM's execution log — instruction count, every plugin invocation in order, what each `store set` left behind, and whether the workflow completed |
-| **Bytecode** | The decoded `.fcb` image: each instruction, its opcode, and its argument, with `ROUTE`/`LOOP` jump targets rendered as clickable links |
-| **Diagnostics** | `fcc`'s errors and warnings, each one clickable to its line and mirrored as an inline marker in the editor |
+| **Bytecode** | The decoded `.fcb` image: each instruction, its opcode, and its argument |
+| **Diagnostics** | `fcc`'s errors and warnings, each with its line number |
 
 Plus worked examples in the
 [wiki](https://github.com/tayyebi/flowcode.wiki) to paste into your first
@@ -47,8 +47,8 @@ project.
 FlowCode has **no comment syntax**. Both `# ...` and `// ...` compile to
 `warning: unrecognized line`, and compilation still exits 0 — so a mistyped line
 is silently dropped from a program that otherwise looks like it worked. The
-Diagnostics tab carries a badge and the editor gets inline markers for exactly
-this reason: a warning is not a non-event in this language.
+Diagnostics section exists for exactly this reason: a warning is not a
+non-event in this language.
 
 ### Why the playground ships its own runtime driver
 
@@ -73,9 +73,9 @@ if that trace ever stops appearing.
 There is no Dockerfile, no prebuilt image, and no CI. `docker compose up -d`
 runs [`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh) inside a
 plain `golang:1.25-alpine` base image: it installs the rest of the toolchain
-(Node, a C compiler, git) and builds FlowCode, the frontend, and the server,
-then execs the result. The repo is bind-mounted into the container, so every
-cache (apk, FlowCode's git clone, Go's module/build cache, npm's cache) and
+(a C compiler, git) and builds FlowCode and the server, then execs the result.
+The repo is bind-mounted into the container, so every
+cache (apk, FlowCode's git clone, Go's module/build cache) and
 every build artifact lives under `.buildcache/` **on the host** — a rebuild
 after a `git pull` only redoes what actually changed, it never redownloads
 dependencies from scratch.
@@ -89,8 +89,7 @@ docker compose logs -f
 ```
 
 The first run compiles everything from a cold cache and takes a few minutes;
-every run after that is fast, since `.buildcache/` and `web/node_modules`
-persist between them.
+every run after that is fast, since `.buildcache/` persists between runs.
 
 ```sh
 docker compose down       # stop the container; .buildcache/ and data/ are untouched
@@ -126,7 +125,9 @@ configurable — see it directly to change either.
 
 ### Without Docker
 
-Requires Go 1.25+, Node 22+, and a C compiler.
+Requires Go 1.25+ and a C compiler. The UI is server-rendered from templates
+embedded in the binary — there is no frontend build and no JavaScript
+anywhere.
 
 ```sh
 # 1. Build FlowCode and the trace driver
@@ -135,22 +136,15 @@ make -C ../flowcode
 cc -std=c11 -O2 -I../flowcode/include -o /tmp/fcplay \
    $(ls ../flowcode/src/*.c | grep -Ev '/(cli|compiler)\.c$') runner/fcplay.c -ldl
 
-# 2. Build the frontend
-cd web && npm ci && npm run build && cd ..
-
-# 3. Run the server
+# 2. Build and run the server
 cd server && go build -o /tmp/playground . && cd ..
 FLOWCODE_FCC=../flowcode/fcc \
 FLOWCODE_RUNNER=/tmp/fcplay \
 PLAYGROUND_WORKDIR=/tmp/play \
-PLAYGROUND_WEB_ROOT=web/dist \
 PLAYGROUND_DB_PATH=/tmp/playground.db \
 PORT=8033 \
 /tmp/playground
 ```
-
-For frontend work, `cd web && npm run dev` serves on :5173 and proxies `/api` to
-:8033, so the editor reloads without rebuilding anything else.
 
 ---
 
@@ -319,24 +313,20 @@ server/            Go HTTP server
   triggers.go        trigger CRUD
   executions.go      execution history
   kv.go              best-effort store-set log
+  web.go             the server-rendered UI: HTML form handlers
+  web/templates/     Go templates for every page (embedded)
+  web/static/        the one stylesheet (embedded)
   ratelimit.go       per-IP token bucket (public deploy URLs)
   internal/engine/     the sandboxed compile+run pipeline (fcc/fcplay), shared
-                        by every execution path — playground, projects,
-                        deployments, and triggers alike
+                        by every execution path — projects, deployments,
+                        and triggers alike
   internal/db/          SQLite schema + embedded migrations
   internal/store/       typed CRUD over the schema, one file per entity
   internal/scheduler/   next-run-time math + the trigger-firing ticker
-web/               Vite + CodeMirror 6, no framework
-  src/router.js          hash router: dashboard / project
-  src/api.js             fetch wrapper for the Projects API
-  src/render-result.js   Trace/Bytecode/Diagnostics rendering for the Run panel
-  src/views/             dashboard, project workspace, deployments/triggers/
-                          executions/kv panels
-  src/flowcode-lang.js   syntax mode derived from src/compiler.c
 scripts/smoke.py             end-to-end check against a running instance
 scripts/docker-entrypoint.sh what `docker compose up -d` actually runs: builds
-                              FlowCode + the frontend + the server, then execs
-                              the playground binary
+                              FlowCode and the server, then execs the
+                              playground binary
 ```
 
 ## Tests

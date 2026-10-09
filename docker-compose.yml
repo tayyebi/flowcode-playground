@@ -2,10 +2,10 @@
 #
 # The service is a plain `golang:1.25-alpine` base image. On every
 # `docker compose up -d` it runs scripts/docker-entrypoint.sh, which installs
-# the rest of the toolchain (Node, a C compiler, git) and builds FlowCode,
-# the frontend, and the server — then execs the result. The whole repo is
+# the rest of the toolchain (a C compiler, git) and builds FlowCode and the
+# server — then execs the result. The whole repo is
 # bind-mounted at /src, so every cache (apk, FlowCode's git clone, Go's
-# module/build cache, npm's cache) and every build artifact lives on the
+# module/build cache) and every build artifact lives on the
 # host under .buildcache/, and survives across deploys: `git pull` on the
 # host followed by `docker compose up -d` only rebuilds what changed, it
 # never redownloads dependencies from scratch.
@@ -55,8 +55,8 @@ services:
 
     volumes:
       # The whole repo. Source, build caches (.buildcache/), and build
-      # outputs (web/dist, .buildcache/bin/) all live here — on the host —
-      # so nothing produced by a build is trapped inside the container.
+      # outputs (.buildcache/bin/) all live here — on the host — so nothing
+      # produced by a build is trapped inside the container.
       - .:/src
       # apk hardcodes this path as its package cache when the directory
       # exists, so it has to be a real mount rather than living under
