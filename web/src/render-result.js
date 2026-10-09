@@ -1,7 +1,5 @@
 // Shared rendering for an engine.Result-shaped JSON body — the Trace,
-// Bytecode, and Diagnostics panes. Used by both the anonymous playground and
-// the project Run panel, so a run's output looks and behaves identically no
-// matter which surface produced it.
+// Bytecode, and Diagnostics panes — for the project Run panel.
 
 export function note(text, kind) {
   const p = document.createElement("p");
@@ -164,9 +162,8 @@ export function unpositionedLines(stderr) {
 }
 
 // renderDiagnosticsList renders the Diagnostics pane's list and raw-stderr
-// spillover. It does not touch an editor — callers that have one (the
-// playground) layer inline gutter markers on top separately, since a plain
-// project-file Run panel has no editor to mark up.
+// spillover. It does not touch an editor — callers that have one layer
+// inline gutter markers on top separately.
 export function renderDiagnosticsList(panel, diagnostics, compile, { onJumpToLine } = {}) {
   panel.innerHTML = "";
 
@@ -221,9 +218,8 @@ export function renderDiagnosticsList(panel, diagnostics, compile, { onJumpToLin
   }
 }
 
-// statusFromResult is a pure function so both the playground's statusbar and
-// the project view's own can render the same summary without duplicating the
-// logic that produces it.
+// statusFromResult is a pure function so the project view's statusbar can
+// render its summary without duplicating the logic that produces it.
 export function statusFromResult(result) {
   const { compile, run } = result;
 
@@ -251,7 +247,7 @@ export function statusFromResult(result) {
 }
 
 // renderResult renders all three panels at once and picks the tab that has
-// the news, mirroring the playground's original behavior.
+// the news.
 export function renderResult(panels, result, { selectTab, activeTab, onJumpToLine } = {}) {
   renderDiagnosticsList(panels.diagnostics, result.compile.diagnostics ?? [], result.compile, { onJumpToLine });
   renderBytecode(panels.bytecode, result);

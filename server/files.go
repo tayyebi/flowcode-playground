@@ -10,6 +10,9 @@ import (
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
 
+// maxSourceBytes caps one .fc file's content.
+const maxSourceBytes = 64 * 1024
+
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.getProjectOr404(w, r)
 	if !ok {

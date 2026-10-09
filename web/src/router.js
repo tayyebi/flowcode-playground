@@ -1,14 +1,11 @@
-// A small hash router with three routes: the playground (default), the
-// project dashboard, and a single project's workspace.
+// A small hash router with two routes: the project dashboard (default) and a
+// single project's workspace.
 //
-// One hash shape predates this router and must keep working unchanged:
-// share.js writes bare `#src=...` permalinks with no route prefix, because
-// that fragment is never sent to the server and the format was fixed before
-// Projects existed. Any hash starting with `src=` is treated as the
-// playground route for exactly that reason.
+// Unknown hashes — including the anonymous playground's old `#/playground`
+// and bare `#src=...` permalinks, which no longer resolve to anything —
+// land on the dashboard rather than a blank page.
 
 const views = {
-  playground: document.getElementById("view-playground"),
   dashboard: document.getElementById("view-dashboard"),
   project: document.getElementById("view-project"),
 };
@@ -16,21 +13,17 @@ const views = {
 let current = null; // { name, unmount? }
 
 function parseRoute(hash) {
-  if (hash.startsWith("#src=")) return { name: "playground" };
-
   const path = hash.replace(/^#\/?/, "");
   const parts = path.split("/").filter(Boolean);
 
-  if (parts.length === 0 || parts[0] === "playground") return { name: "playground" };
-  if (parts[0] === "dashboard") return { name: "dashboard" };
   if (parts[0] === "projects" && parts[1]) {
     return { name: "project", projectId: parts[1], tab: parts[2] };
   }
-  return { name: "playground" };
+  return { name: "dashboard" };
 }
 
 // initRouter wires hashchange to mount/unmount the matching view.
-// handlers = { playground: {mount, unmount}, dashboard: {...}, project: {...} }
+// handlers = { dashboard: {mount, unmount}, project: {...} }
 // Each mount(container, route) may return an unmount function.
 export function initRouter(handlers) {
   async function apply() {

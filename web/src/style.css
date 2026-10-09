@@ -22,7 +22,6 @@
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
   --radius: 6px;
-  --topbar-h: 52px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -74,49 +73,6 @@ body {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
-}
-
-/* ---------------------------------------------------------------- Topbar */
-
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  height: var(--topbar-h);
-  padding: 0 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
-  flex-shrink: 0;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.brand h1 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-}
-
-.brand-mark {
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  flex-shrink: 0;
-  background: linear-gradient(135deg, var(--accent), #8b5cf6);
-}
-
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 select,
@@ -171,56 +127,6 @@ select:hover,
   outline-offset: 2px;
 }
 
-.sample-description {
-  margin: 0;
-  padding: 8px 16px;
-  font-size: 12.5px;
-  color: var(--text-muted);
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--border);
-}
-
-/* ------------------------------------------------------------- Workspace */
-
-.workspace {
-  flex: 1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  min-height: 0;
-}
-
-.pane {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
-.pane-editor {
-  border-right: 1px solid var(--border);
-}
-
-#editor {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-/* Below this the two panes stop being usable side by side. */
-@media (max-width: 860px) {
-  .workspace {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(220px, 1fr) minmax(220px, 1fr);
-  }
-  .pane-editor {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-  .brand h1 {
-    display: none;
-  }
-}
-
 /* ------------------------------------------------------------------ Tabs */
 
 .tabs {
@@ -255,22 +161,6 @@ select:hover,
   color: var(--text);
   font-weight: 600;
   border-bottom-color: var(--accent);
-}
-
-.badge {
-  font-family: var(--mono);
-  font-size: 11px;
-  min-width: 18px;
-  padding: 1px 5px;
-  border-radius: 9px;
-  text-align: center;
-  background: var(--warn-bg);
-  color: var(--warn);
-}
-
-.badge-error {
-  background: var(--error-bg);
-  color: var(--error);
 }
 
 .panels {

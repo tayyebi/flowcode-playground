@@ -1,12 +1,11 @@
 # FlowCode Playground
 
 A platform for [FlowCode](https://github.com/tayyebi/flowcode): write a
-workflow, press Run, and see the compiler's diagnostics, the bytecode it
-emitted, and a trace of the VM executing it — without installing a C
-toolchain. Beyond the anonymous one-shot playground, it also lets you save
-projects, keep versioned snapshots, deploy a file as a public HTTP endpoint,
-schedule time-driven triggers, and inspect a best-effort log of what a
-workflow's `store set` calls wrote.
+workflow in a saved project, press Run, and see the compiler's diagnostics,
+the bytecode it emitted, and a trace of the VM executing it — without
+installing a C toolchain. Projects keep versioned snapshots, deploy a file as
+a public HTTP endpoint, schedule time-driven triggers, and record a
+best-effort log of what a workflow's `store set` calls wrote.
 
 ```
 docker compose up -d
@@ -14,16 +13,17 @@ docker compose up -d
 
 Then open <http://localhost:8033>.
 
-## Two ways to use this
+## Using it
 
-**The anonymous playground** (`/`, or the "Playground" nav link) is unchanged
-from before: paste a program, press Run, nothing is saved, nothing is logged.
-
-**Projects** (`/#/dashboard`) are saved, named workspaces: multiple
-independently-runnable `.fc` files, "Save Version" snapshots, deployments,
-and time-driven triggers. See [Projects, deployments, triggers, and the KV
+The dashboard (`/#/dashboard`) lists your projects. A project is a saved,
+named workspace: multiple independently-runnable `.fc`
+files, "Save Version" snapshots, deployments, and time-driven triggers. See
+[Projects, deployments, triggers, and the KV
 log](#projects-deployments-triggers-and-the-kv-log) below for the important
 limitations before relying on any of this for something real.
+
+(The anonymous one-shot playground that used to live at `/` is gone, along
+with its sample picker and shareable permalinks.)
 
 ---
 
@@ -38,8 +38,9 @@ produces three genuinely different kinds of information:
 | **Bytecode** | The decoded `.fcb` image: each instruction, its opcode, and its argument, with `ROUTE`/`LOOP` jump targets rendered as clickable links |
 | **Diagnostics** | `fcc`'s errors and warnings, each one clickable to its line and mirrored as an inline marker in the editor |
 
-Plus a picker for all eight bundled sample workflows, syntax highlighting built
-from the compiler's own token rules, and shareable permalinks.
+Plus worked examples in the
+[wiki](https://github.com/tayyebi/flowcode.wiki) to paste into your first
+project.
 
 ### Why warnings matter here
 
@@ -114,12 +115,10 @@ Configuration, all optional:
 |---|---|---|
 | `PLAYGROUND_TIMEOUT` | `5s` | Wall-clock limit for one compile or one run |
 | `PLAYGROUND_MAX_CONCURRENT` | `4` | Simultaneous compile+run slots; beyond this, requests queue then 503 |
-| `PLAYGROUND_RATE_PER_MINUTE` | `30` | Per-IP run budget for the anonymous playground |
-| `PLAYGROUND_RATE_BURST` | `10` | Per-IP burst allowance for the anonymous playground |
-| `PLAYGROUND_DEPLOY_RATE_PER_MINUTE` | `60` | Per-IP budget for public `/deploy/{slug}` calls, tracked separately so deploy traffic can't starve (or be starved by) the playground's own budget |
+| `PLAYGROUND_DEPLOY_RATE_PER_MINUTE` | `60` | Per-IP budget for public `/deploy/{slug}` calls |
 | `PLAYGROUND_DEPLOY_RATE_BURST` | `20` | Burst allowance for `/deploy/{slug}` |
 | `TRUST_PROXY` | `0` | Set to `1` **only** behind a reverse proxy you control — see below |
-| `PLAYGROUND_ADMIN_TOKEN` | *(unset)* | A single shared secret gating `/api/projects...`. Unset means those routes are open to anyone who can reach the server — same posture as before Projects existed. Never gates `/api/run`, `/api/samples`, `/healthz`, or a deployment's public URL |
+| `PLAYGROUND_ADMIN_TOKEN` | *(unset)* | A single shared secret gating every `/api/projects...` route — with the anonymous playground gone, that is the whole API. Unset means those routes are open to anyone who can reach the server. Never gates `/healthz` or a deployment's public URL |
 
 The port (`8033`) and the SQLite path (`/data/playground.db`, bind-mounted
 from `./data` on the host) are fixed in `docker-compose.yml` rather than
@@ -143,7 +142,6 @@ cd web && npm ci && npm run build && cd ..
 cd server && go build -o /tmp/playground . && cd ..
 FLOWCODE_FCC=../flowcode/fcc \
 FLOWCODE_RUNNER=/tmp/fcplay \
-PLAYGROUND_EXAMPLES_DIR=examples \
 PLAYGROUND_WORKDIR=/tmp/play \
 PLAYGROUND_WEB_ROOT=web/dist \
 PLAYGROUND_DB_PATH=/tmp/playground.db \
@@ -158,8 +156,11 @@ For frontend work, `cd web && npm run dev` serves on :5173 and proxies `/api` to
 
 ## Security model
 
-The playground compiles and executes code submitted by strangers. Two things
-make that tractable, and one caveat qualifies both.
+The engine compiles and executes whatever a project author saves — and
+unless an admin token is set, anyone who can reach the server is a project
+author, and a public `/deploy/{slug}` URL re-runs a stored workflow for
+anyone holding it. Two things make that tractable, and one caveat qualifies
+both.
 
 **FlowCode's runtime does no I/O.** All 17 builtin plugins in `src/builtins.c`
 are pass-throughs that log and forward their token — a shipped `http.post` that
@@ -183,8 +184,8 @@ container is set up:
 - a wall-clock timeout kills the child's whole **process group** — rlimits alone
   are not enough, since `RLIMIT_CPU` counts CPU time and a blocked process burns
   none
-- output is capped at 64 KB per stream, source at 64 KB, plus per-IP rate
-  limiting and a bounded number of concurrent runs
+- output is capped at 64 KB per stream, file content at 64 KB, plus per-IP
+  rate limiting on public deploy URLs and a bounded number of concurrent runs
 - children run with a bare environment, so nothing from the server's own env
   reaches them
 
@@ -202,18 +203,20 @@ proxy you control and strongly consider running it in a VM or under gVisor.
 it and get a fresh rate-limit bucket per request — worse than having no limit,
 because it looks like one is working.
 
-Submitted programs are never written to the server's logs, and permalinks live
-in the URL fragment, which browsers do not send to the server at all.
+Submitted programs are never written to the server's logs.
 
 ---
 
 ## API
 
-`POST /api/run` — `{"source": "..."}`
+### Run results
+
+`POST /api/projects/{id}/files/{name}/run` returns the engine's result — the
+shape every execution path produces (manual runs, triggers, deployments).
 
 A program that fails to compile is a normal outcome and comes back as **200**
 with the details in the body. Non-2xx means the *request* was refused: `400`
-malformed or empty, `413` over 64 KB, `429` rate limited, `503` too busy.
+malformed, `413` over 64 KB, `503` too busy.
 
 ```jsonc
 {
@@ -245,10 +248,8 @@ malformed or empty, `413` over 64 KB, `429` rate limited, `503` too busy.
 `run` is absent when compilation failed. `bytecode` is present whenever `fcc`
 produced a readable image — including runs that only warned.
 
-`GET /api/samples` — the bundled workflows, as `[{id, name, description, source}]`.
-
-`GET /healthz` — `{"status": "ok", "samples": 8}`; also pings the database. Backs
-the compose healthcheck.
+`GET /healthz` — `{"status": "ok"}`; also pings the database. Backs the
+compose healthcheck.
 
 ### Projects API
 
@@ -268,8 +269,8 @@ GET        /api/projects/{id}/executions[/{id}]
 GET/DELETE /api/projects/{id}/kv[/{key}]
 ```
 
-`ANY /deploy/{slug}` is public (same posture as `/api/run`, its own rate
-limit) — see the limitations below before using it for anything real.
+`ANY /deploy/{slug}` is public, with its own rate limit — see the
+limitations below before using it for anything real.
 
 ---
 
@@ -312,15 +313,13 @@ attempted here.
 runner/fcplay.c    trace driver: cli.c + DEBUG logging + rlimits + store-set dump
 server/            Go HTTP server
   main.go            routing, startup, admin token, health
-  run.go             POST /api/run (anonymous playground)
   adminauth.go       shared-secret gate for /api/projects...
   projects.go, files.go, versions.go   project/file/version CRUD
   deployments.go     deployment CRUD + public /deploy/{slug}
   triggers.go        trigger CRUD
   executions.go      execution history
   kv.go              best-effort store-set log
-  samples.go         sample loading, GET /api/samples
-  ratelimit.go       per-IP token bucket
+  ratelimit.go       per-IP token bucket (public deploy URLs)
   internal/engine/     the sandboxed compile+run pipeline (fcc/fcplay), shared
                         by every execution path — playground, projects,
                         deployments, and triggers alike
@@ -328,14 +327,12 @@ server/            Go HTTP server
   internal/store/       typed CRUD over the schema, one file per entity
   internal/scheduler/   next-run-time math + the trigger-firing ticker
 web/               Vite + CodeMirror 6, no framework
-  src/router.js          hash router: playground / dashboard / project
+  src/router.js          hash router: dashboard / project
   src/api.js             fetch wrapper for the Projects API
-  src/render-result.js   Trace/Bytecode/Diagnostics rendering, shared by the
-                          playground and a project's Run panel
+  src/render-result.js   Trace/Bytecode/Diagnostics rendering for the Run panel
   src/views/             dashboard, project workspace, deployments/triggers/
                           executions/kv panels
   src/flowcode-lang.js   syntax mode derived from src/compiler.c
-  src/share.js           deflate + base64url permalinks (playground only)
 scripts/smoke.py             end-to-end check against a running instance
 scripts/docker-entrypoint.sh what `docker compose up -d` actually runs: builds
                               FlowCode + the frontend + the server, then execs
@@ -349,15 +346,8 @@ cd server && go test ./...                    # unit tests
 python3 scripts/smoke.py http://localhost:8033  # end-to-end, against a running instance
 ```
 
-To seed [Watchtower](docs/demo.md), the demo project that exercises every
-Phase A feature (files, versions, deployments, triggers, executions, KV):
-
-```sh
-python3 scripts/seed-watchtower.py http://localhost:8033 --reset
-```
-
-The Go end-to-end tests skip unless `FLOWCODE_FCC` and `FLOWCODE_RUNNER` point
-at real binaries; set `PLAYGROUND_EXAMPLES_DIR` as well to check every bundled
-sample — see [Without Docker](#without-docker) for how to build them locally.
-There is no CI: run both of the above yourself before deploying, and run
-`scripts/smoke.py` against the real instance after `docker compose up -d`.
+The Go end-to-end tests skip unless `FLOWCODE_FCC` and `FLOWCODE_RUNNER`
+point at real binaries — see [Without Docker](#without-docker) for how to
+build them locally. There is no CI: run both of the above yourself before
+deploying, and run `scripts/smoke.py` against the real instance after
+`docker compose up -d`.

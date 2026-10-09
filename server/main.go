@@ -18,7 +18,6 @@ import (
 	"github.com/tayyebi/flowcode-playground/server/internal/db"
 	"github.com/tayyebi/flowcode-playground/server/internal/engine"
 	"github.com/tayyebi/flowcode-playground/server/internal/scheduler"
-	"github.com/tayyebi/flowcode-playground/server/internal/seed"
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
 
@@ -28,14 +27,11 @@ type Server struct {
 	TrustProxy bool
 	AdminToken string
 
-	samples       []Sample
 	engine        *engine.Engine
-	limiter       *rateLimiter
 	deployLimiter *rateLimiter
 	store         *store.Store
 	scheduler     *scheduler.Scheduler
 	sqlDB         *sql.DB
-	examplesDir   string
 }
 
 func main() {
@@ -48,16 +44,8 @@ func main() {
 
 	addr := ":" + env("PORT", "8033")
 	done := make(chan struct{})
-	go srv.limiter.run(done)
 	go srv.deployLimiter.run(done)
 	go srv.scheduler.Run(done)
-
-	// Seed examples in the background so the server takes requests while it
-	// works — seeding compiles and runs every runnable file, which takes
-	// seconds, and nothing about the first request depends on its outcome.
-	if mode := env("PLAYGROUND_SEED_EXAMPLES", "auto"); mode != "0" && mode != "off" {
-		go srv.seedExamples(mode == "refresh")
-	}
 
 	httpServer := &http.Server{
 		Addr:    addr,
@@ -77,8 +65,8 @@ func main() {
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("flowcode playground listening on %s (%d samples, timeout %s)",
-			addr, len(srv.samples), srv.engine.Timeout)
+		log.Printf("flowcode playground listening on %s (timeout %s)",
+			addr, srv.engine.Timeout)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}
@@ -107,14 +95,6 @@ func newServerFromEnv() (*Server, error) {
 	if err != nil || concurrency < 1 {
 		return nil, errors.New("PLAYGROUND_MAX_CONCURRENT must be a positive integer")
 	}
-	rpm, err := strconv.Atoi(env("PLAYGROUND_RATE_PER_MINUTE", "30"))
-	if err != nil || rpm < 1 {
-		return nil, errors.New("PLAYGROUND_RATE_PER_MINUTE must be a positive integer")
-	}
-	burst, err := strconv.Atoi(env("PLAYGROUND_RATE_BURST", "10"))
-	if err != nil || burst < 1 {
-		return nil, errors.New("PLAYGROUND_RATE_BURST must be a positive integer")
-	}
 
 	deployRpm, err := strconv.Atoi(env("PLAYGROUND_DEPLOY_RATE_PER_MINUTE", "60"))
 	if err != nil || deployRpm < 1 {
@@ -132,8 +112,8 @@ func newServerFromEnv() (*Server, error) {
 	adminToken := os.Getenv("PLAYGROUND_ADMIN_TOKEN")
 
 	// Fail loudly at startup rather than returning 500s later: a missing
-	// binary or unreadable samples directory is a broken image, and it should
-	// be obvious from the first log line, not from user reports.
+	// binary or an unreadable working directory is a broken deploy, and it
+	// should be obvious from the first log line, not from user reports.
 	if err := checkExecutable(compilerPath); err != nil {
 		return nil, err
 	}
@@ -165,52 +145,13 @@ func newServerFromEnv() (*Server, error) {
 		TrustProxy:    env("TRUST_PROXY", "") == "1",
 		AdminToken:    adminToken,
 		engine:        eng,
-		limiter:       newRateLimiter(rpm, burst, 10*time.Minute),
 		deployLimiter: newRateLimiter(deployRpm, deployBurst, 10*time.Minute),
 		store:         st,
 		scheduler:     scheduler.New(st, eng),
 		sqlDB:         sqlDB,
 	}
 
-	// The repo's own examples/ directory is the single home for all examples:
-	// plain samples for the picker and project examples for the seeder. The
-	// default fits local development (running from server/); the container's
-	// entrypoint points it at /src/examples explicitly.
-	s.examplesDir = env("PLAYGROUND_EXAMPLES_DIR", "../examples")
-	samples, err := loadSamples(s.examplesDir)
-	if err != nil {
-		return nil, err
-	}
-	s.samples = samples
-
 	return s, nil
-}
-
-// seedExamples loads the project examples and seeds any this database hasn't
-// recorded yet. Runs on its own goroutine at startup; every outcome (seeded,
-// adopted, skipped, failed) is logged so `docker compose logs` tells the story.
-func (s *Server) seedExamples(refresh bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	examples, err := seed.Load(s.examplesDir)
-	if err != nil {
-		log.Printf("seed: %v", err)
-		return
-	}
-	if len(examples) == 0 {
-		log.Print("seed: no project examples found (examples/ has no project.json manifests)")
-		return
-	}
-	opts := seed.Options{Refresh: refresh}
-	if refresh {
-		log.Printf("seed: refresh requested — re-seeding %d example(s)", len(examples))
-	}
-	if err := seed.Seed(ctx, s.store, s.engine, examples, opts); err != nil {
-		log.Printf("seed: finished with errors: %v", err)
-		return
-	}
-	log.Print("seed: done")
 }
 
 const maxOutputBytes = 64 * 1024
@@ -219,8 +160,6 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/api/samples", s.handleSamples)
-	mux.HandleFunc("/api/run", s.limiter.middleware(s.TrustProxy, s.handleRun))
 
 	mux.HandleFunc("POST /api/admin/login", s.handleAdminLogin)
 	mux.HandleFunc("POST /api/admin/logout", s.handleAdminLogout)
@@ -260,7 +199,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/projects/{id}/kv/{key}", admin(s.handleDeleteKV))
 
 	// Public: no admin gate, since a deployment is meant to be reachable by
-	// whoever has its URL, same posture as /api/run.
+	// whoever has its URL.
 	mux.HandleFunc("/deploy/{slug}", s.deployLimiter.middleware(s.TrustProxy, s.handleDeploy))
 
 	// Static assets last, on the catch-all, so the API routes win.
@@ -311,8 +250,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"samples": len(s.samples),
+		"status": "ok",
 	})
 }
 
