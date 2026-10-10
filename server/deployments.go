@@ -10,11 +10,11 @@ import (
 )
 
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.getProjectOr404(w, r)
+	p, _, _, ok := s.wsProjectOr404(w, r)
 	if !ok {
 		return
 	}
-	deployments, err := s.store.ListDeployments(r.Context(), p.ID)
+	deployments, err := s.store.ListWSDeployments(r.Context(), p.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list deployments")
 		return
@@ -28,15 +28,18 @@ type createDeploymentRequest struct {
 }
 
 func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.getProjectOr404(w, r)
+	p, role, _, ok := s.wsProjectOr404(w, r)
 	if !ok {
+		return
+	}
+	if !requireRole(w, role, store.RoleEditor) {
 		return
 	}
 	var req createDeploymentRequest
 	if err := decodeJSON(w, r, &req, 4096); err != nil {
 		return
 	}
-	f, err := s.store.GetFile(r.Context(), p.ID, req.FileName)
+	f, err := s.store.GetWSFile(r.Context(), p.ID, req.FileName)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusBadRequest, "fileName does not refer to a file in this project")
 		return
@@ -45,7 +48,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not look up file")
 		return
 	}
-	dep, err := s.store.CreateDeployment(r.Context(), p.ID, f.ID, req.VersionID)
+	dep, err := s.store.CreateWSDeployment(r.Context(), p.ID, f.ID, req.VersionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create deployment")
 		return
@@ -58,7 +61,7 @@ type updateDeploymentRequest struct {
 }
 
 func (s *Server) handleUpdateDeployment(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.getProjectOr404(w, r); !ok {
+	if _, _, _, ok := s.wsProjectOr404(w, r); !ok {
 		return
 	}
 	depID, ok := pathInt64(w, r, "depId")
@@ -70,12 +73,12 @@ func (s *Server) handleUpdateDeployment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if req.Enabled != nil {
-		if err := s.store.SetDeploymentEnabled(r.Context(), depID, *req.Enabled); err != nil {
+		if err := s.store.SetWSDeploymentEnabled(r.Context(), depID, *req.Enabled); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not update deployment")
 			return
 		}
 	}
-	dep, err := s.store.GetDeployment(r.Context(), depID)
+	dep, err := s.store.GetWSDeployment(r.Context(), depID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "deployment not found")
 		return
@@ -88,27 +91,24 @@ func (s *Server) handleUpdateDeployment(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleDeleteDeployment(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.getProjectOr404(w, r); !ok {
+	if _, _, _, ok := s.wsProjectOr404(w, r); !ok {
 		return
 	}
 	depID, ok := pathInt64(w, r, "depId")
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteDeployment(r.Context(), depID); err != nil {
+	if err := s.store.DeleteWSDeployment(r.Context(), depID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete deployment")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// deployResponse is the Phase A shape for a public deployment call. See the
-// plan doc: since FlowCode has no host-input channel, the incoming request's
+// deployResponse is the public deployment call shape. The incoming request's
 // method/query/body are ignored — this re-executes the file's workflow with
-// no parameters and returns the raw result, not something the workflow
-// computed for this specific request. That limitation is stated explicitly
-// here rather than glossed over, because a caller could otherwise reasonably
-// assume this is a normal request/response web endpoint.
+// no parameters and returns the raw result. (FlowCode's webhook-style
+// triggering is host-side: this public URL IS the listener.)
 type deployResponse struct {
 	Deployment string `json:"deployment"`
 	Note       string `json:"note"`
@@ -116,14 +116,15 @@ type deployResponse struct {
 	ExecutionID int64 `json:"executionId,omitempty"`
 }
 
-const deployLimitationNote = "this deployment ignores the incoming request; it re-executes the workflow with no parameters (Phase A limitation)"
+const deployLimitationNote = "this deployment ignores the incoming request; it re-executes the workflow with no parameters"
 
 // handleDeploy serves a project file's public, slug-addressed HTTP endpoint.
-// It goes through the exact same engine.Run call as every other execution
-// path in this codebase — nothing here duplicates the compile/run pipeline.
+// It goes through the exact same engine.RunWithActor pipeline as every other
+// execution path — nothing here duplicates the compile/run bridge, and the
+// run is attributed to the project's owner for quotas and app-call records.
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	dep, err := s.store.GetDeploymentBySlug(r.Context(), slug)
+	dep, err := s.store.GetWSDeploymentBySlug(r.Context(), slug)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && !dep.Enabled) {
 		writeError(w, http.StatusNotFound, "no such deployment, or it has been disabled")
 		return
@@ -133,14 +134,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	source, f, err := s.resolveDeploymentSource(r, dep)
+	source, f, p, err := s.resolveDeploymentSource(r, dep)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not resolve deployment source")
 		return
 	}
 
+	actor := s.ownerActor(r.Context(), p)
+
 	started := time.Now()
-	result, runErr := s.engine.Run(r.Context(), source)
+	result, runErr := s.engine.RunWithActor(r.Context(), source, actor)
 	finished := time.Now()
 
 	w.Header().Set("X-FlowCode-Deploy-Note", deployLimitationNote)
@@ -157,7 +160,13 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exec, execErr := s.recordExecution(r.Context(), dep.ProjectID, f, dep.VersionID, "deployment", &dep.ID, nil, started, finished, result, nil)
+	var owner *store.User
+	if p != nil && p.CreatedBy > 0 {
+		if u, uerr := s.store.GetUser(r.Context(), p.CreatedBy); uerr == nil {
+			owner = u
+		}
+	}
+	exec, execErr := s.recordExecution(r.Context(), p, f, dep.VersionID, "deployment", &dep.ID, nil, owner, started, finished, result, nil)
 
 	status := http.StatusOK
 	if result.Compile.ExitCode != 0 || (result.Run != nil && result.Run.ExitCode != 0) {
@@ -187,17 +196,21 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, resp)
 }
 
-func (s *Server) resolveDeploymentSource(r *http.Request, dep *store.Deployment) (string, *store.File, error) {
-	f, err := s.store.GetFileByID(r.Context(), dep.FileID)
+func (s *Server) resolveDeploymentSource(r *http.Request, dep *store.Deployment) (string, *store.File, *store.WSProject, error) {
+	f, err := s.store.GetWSFileByID(r.Context(), dep.FileID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
+	}
+	p, err := s.store.GetWSProject(r.Context(), f.ProjectID)
+	if err != nil {
+		return "", nil, nil, err
 	}
 	if dep.VersionID == nil {
-		return f.Content, f, nil
+		return f.Content, f, p, nil
 	}
-	content, err := s.store.GetVersionFileContent(r.Context(), *dep.VersionID, f.Name)
+	content, err := s.store.GetWSVersionFileContent(r.Context(), *dep.VersionID, f.Name)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return content, f, nil
+	return content, f, p, nil
 }

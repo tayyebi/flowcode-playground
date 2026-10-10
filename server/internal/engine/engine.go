@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/tayyebi/flowcode-playground/server/internal/apps"
 )
 
 const (
@@ -24,10 +27,14 @@ const (
 var ErrBusy = errors.New("engine: busy, all execution slots occupied")
 
 // Engine owns the sandboxed compile+run pipeline and the bounded pool of
-// concurrent executions shared by every caller: the anonymous playground,
-// project runs, deployments, and triggers. Without this shared pool, a burst
-// of requests across those paths could fork an unbounded number of
-// compilers well before any individual rlimit was reached.
+// concurrent executions shared by every caller: the project runs,
+// deployments, and triggers. Without this shared pool, a burst of requests
+// across those paths could fork an unbounded number of compilers well before
+// any individual rlimit was reached.
+//
+// Apps, when set, enables the unix-socket bridge: the runner receives the
+// socket path as a second argument and forwards every MailApp/UrlFetchApp/
+// Logger.log call back here for execution.
 type Engine struct {
 	CompilerPath string
 	RunnerPath   string
@@ -35,6 +42,8 @@ type Engine struct {
 	Timeout      time.Duration
 	QueueWait    time.Duration
 	OutputLimit  int
+
+	Apps *apps.Service
 
 	slots chan struct{}
 }
@@ -61,7 +70,7 @@ type CompileResult struct {
 
 // Result is the outcome of compiling, and if the compile succeeded running,
 // one FlowCode source. Field names/tags are load-bearing: they are the
-// anonymous playground's public JSON contract and must not change shape.
+// public JSON contract and must not change shape.
 type Result struct {
 	Compile CompileResult `json:"compile"`
 	// Bytecode is present whenever fcc produced a readable image — which
@@ -69,15 +78,36 @@ type Result struct {
 	Bytecode      *Bytecode    `json:"bytecode,omitempty"`
 	BytecodeError string       `json:"bytecodeError,omitempty"`
 	Run           *StageResult `json:"run,omitempty"`
-	Truncated     bool         `json:"truncated"`
+	// AppCalls is every bridge invocation this run made, in order — the
+	// GAS-style execution transcript for the four apps.
+	AppCalls  []*AppCall `json:"appCalls,omitempty"`
+	Truncated bool       `json:"truncated"`
 }
 
-// Run acquires a bounded execution slot and compiles+runs source.
+// AppCall is one bridge invocation, for display in the run result and (for
+// mail/http) persistence into the app_calls table.
+type AppCall struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Request    string `json:"request,omitempty"`
+	Response   string `json:"response,omitempty"`
+	DurationMs int64  `json:"durationMs"`
+}
+
+// Run acquires a bounded execution slot and compiles+runs source with no
+// attributing actor (bridge disabled unless Engine.Apps is set).
 //
 // It returns ErrBusy if no slot freed up within QueueWait, and ctx.Err() if
 // the caller's context was cancelled first — callers decide how to surface
 // each (a 503 for an HTTP handler, a failed execution row for a trigger).
 func (e *Engine) Run(ctx context.Context, source string) (*Result, error) {
+	return e.RunWithActor(ctx, source, apps.Actor{})
+}
+
+// RunWithActor is Run with the user a run is executed as: quotas, call
+// records, and Loki labels attribute to the actor. A zero actor with Apps
+// set still bridges (attributed to uid 0).
+func (e *Engine) RunWithActor(ctx context.Context, source string, actor apps.Actor) (*Result, error) {
 	select {
 	case e.slots <- struct{}{}:
 		defer func() { <-e.slots }()
@@ -87,10 +117,10 @@ func (e *Engine) Run(ctx context.Context, source string) (*Result, error) {
 		return nil, ErrBusy
 	}
 
-	return e.compileAndRun(ctx, source)
+	return e.compileAndRun(ctx, source, actor)
 }
 
-func (e *Engine) compileAndRun(ctx context.Context, source string) (*Result, error) {
+func (e *Engine) compileAndRun(ctx context.Context, source string, actor apps.Actor) (*Result, error) {
 	dir, err := os.MkdirTemp(e.WorkDir, "run-")
 	if err != nil {
 		return nil, fmt.Errorf("create work dir: %w", err)
@@ -129,7 +159,21 @@ func (e *Engine) compileAndRun(ctx context.Context, source string) (*Result, err
 	// Only execute a clean compile. Running the partial output of a failed one
 	// would report VM errors that are really just compiler errors in disguise.
 	if compile.ExitCode == 0 && !compile.TimedOut {
-		run := runStage(ctx, e.Timeout, e.OutputLimit, dir, e.RunnerPath, bytecodeFile)
+		runArgs := []string{bytecodeFile}
+		if e.Apps != nil {
+			// Bridge mode: a unix socket in the run directory, served for
+			// exactly as long as the runner lives. The runner forwards its
+			// app calls here; the core itself never listens to anything.
+			ln, lerr := net.Listen("unix", bridgeSocketPath(dir))
+			if lerr == nil {
+				defer ln.Close()
+				runArgs = append(runArgs, bridgeSocketPath(dir))
+				go e.serveBridge(ctx, ln, actor, res)
+			} else {
+				log.Printf("bridge disabled for this run: %v", lerr)
+			}
+		}
+		run := runStage(ctx, e.Timeout, e.OutputLimit, dir, e.RunnerPath, runArgs...)
 		res.Run = &run
 	}
 

@@ -137,6 +137,10 @@ func disassemble(data []byte) (*Bytecode, error) {
 			ins.Arg = fmt.Sprintf("-> instruction %d", target)
 		case argLength == 0:
 			ins.Arg = ""
+		case op == 0x03 || op == 0x04:
+			// CALL/TRANSFORM: the arg blob is "name\0k\0v\0…" (params are
+			// optional; a legacy image is the bare name with no interior NUL).
+			ins.Arg = renderCallArg(payload)
 		case isPrintable(payload):
 			ins.Arg = quoteReadable(string(payload))
 		default:
@@ -147,6 +151,34 @@ func disassemble(data []byte) (*Bytecode, error) {
 	}
 
 	return bc, nil
+}
+
+// renderCallArg decodes a CALL/TRANSFORM argument blob into
+// `name key=value key=value` for the bytecode table.
+func renderCallArg(payload []byte) string {
+	name, rest := splitAtNUL(payload)
+	out := string(name)
+	for len(rest) > 0 {
+		var k, v []byte
+		k, rest = splitAtNUL(rest)
+		if len(rest) == 0 && len(k) == 0 {
+			break
+		}
+		v, rest = splitAtNUL(rest)
+		out += fmt.Sprintf(" %s=%s", k, v)
+	}
+	return out
+}
+
+// splitAtNUL splits b at the first NUL, returning the head and the tail after
+// it. With no NUL, the head is everything and the tail is empty (legacy blob).
+func splitAtNUL(b []byte) (head, tail []byte) {
+	for i, c := range b {
+		if c == 0 {
+			return b[:i], b[i+1:]
+		}
+	}
+	return b, nil
 }
 
 // isPrintable reports whether the payload reads as text worth showing as text.

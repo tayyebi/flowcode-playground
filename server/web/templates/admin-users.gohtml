@@ -1,0 +1,22 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>Users</h1>
+<p class="note">Read-only on purpose. Promote a system administrator with
+<code>UPDATE users SET is_admin = 1 WHERE email = '…';</code> — there is no promote UI.</p>
+
+<table class="list">
+  <thead><tr><th>Email</th><th>Name</th><th>Admin</th><th>First seen</th><th>Last login</th></tr></thead>
+  <tbody>
+    {{range .Users}}
+    <tr>
+      <td>{{.Email}}</td>
+      <td>{{.Name}}</td>
+      <td>{{if .IsAdmin}}<span class="tag tag-ok">yes</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="muted">{{.CreatedAt}}</td>
+      <td class="muted">{{.LastLoginAt}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+
+{{template "admin-bottom.gohtml" .}}

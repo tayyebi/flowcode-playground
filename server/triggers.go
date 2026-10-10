@@ -10,11 +10,11 @@ import (
 )
 
 func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.getProjectOr404(w, r)
+	p, _, _, ok := s.wsProjectOr404(w, r)
 	if !ok {
 		return
 	}
-	triggers, err := s.store.ListTriggers(r.Context(), p.ID)
+	triggers, err := s.store.ListWSTriggers(r.Context(), p.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list triggers")
 		return
@@ -31,15 +31,18 @@ type createTriggerRequest struct {
 }
 
 func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.getProjectOr404(w, r)
+	p, role, _, ok := s.wsProjectOr404(w, r)
 	if !ok {
+		return
+	}
+	if !requireRole(w, role, store.RoleEditor) {
 		return
 	}
 	var req createTriggerRequest
 	if err := decodeJSON(w, r, &req, 4096); err != nil {
 		return
 	}
-	f, err := s.store.GetFile(r.Context(), p.ID, req.FileName)
+	f, err := s.store.GetWSFile(r.Context(), p.ID, req.FileName)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusBadRequest, "fileName does not refer to a file in this project")
 		return
@@ -59,7 +62,7 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := s.store.CreateTrigger(r.Context(), store.NewTrigger{
+	t, err := s.store.CreateWSTrigger(r.Context(), store.NewTrigger{
 		ProjectID: p.ID, FileID: f.ID, VersionID: req.VersionID,
 		ScheduleType: req.ScheduleType, IntervalSeconds: req.IntervalSeconds, DailyTimeUTC: req.DailyTimeUTC,
 		NextRunAt: scheduler.FormatTime(next),
@@ -76,7 +79,7 @@ type updateTriggerRequest struct {
 }
 
 func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.getProjectOr404(w, r); !ok {
+	if _, _, _, ok := s.wsProjectOr404(w, r); !ok {
 		return
 	}
 	trigID, ok := pathInt64(w, r, "trigId")
@@ -88,12 +91,12 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Enabled != nil {
-		if err := s.store.SetTriggerEnabled(r.Context(), trigID, *req.Enabled); err != nil {
+		if err := s.store.SetWSTriggerEnabled(r.Context(), trigID, *req.Enabled); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not update trigger")
 			return
 		}
 	}
-	t, err := s.store.GetTrigger(r.Context(), trigID)
+	t, err := s.store.GetWSTrigger(r.Context(), trigID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "trigger not found")
 		return
@@ -106,14 +109,14 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteTrigger(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.getProjectOr404(w, r); !ok {
+	if _, _, _, ok := s.wsProjectOr404(w, r); !ok {
 		return
 	}
 	trigID, ok := pathInt64(w, r, "trigId")
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteTrigger(r.Context(), trigID); err != nil {
+	if err := s.store.DeleteWSTrigger(r.Context(), trigID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete trigger")
 		return
 	}

@@ -26,8 +26,7 @@ var webFS embed.FS
 
 var pageTemplates = template.Must(template.ParseFS(webFS, "web/templates/*.gohtml"))
 
-// newFileTemplate is what a freshly added file starts from — the same
-// starting point the SPA used to seed its editor with.
+// newFileTemplate is what a freshly added file starts from.
 const newFileTemplate = `workflow: NewWorkflow
 
 step first:
@@ -40,14 +39,14 @@ end
 // redirect's query string (?ok=… / ?err=…), which keeps POST handlers simple
 // and the pages linkable.
 type basePage struct {
-	Title        string
-	Flash        string
-	FlashOK      bool
-	AdminEnabled bool // the server has a PLAYGROUND_ADMIN_TOKEN configured
+	Title   string
+	Flash   string
+	FlashOK bool
+	User    *store.User
 }
 
 func (s *Server) basePage(r *http.Request, title string) basePage {
-	b := basePage{Title: title, AdminEnabled: s.AdminToken != ""}
+	b := basePage{Title: title, User: s.currentUser(r)}
 	if v := r.URL.Query().Get("ok"); v != "" {
 		b.Flash, b.FlashOK = v, true
 	}
@@ -62,18 +61,6 @@ func (s *Server) renderPage(w http.ResponseWriter, status int, name string, data
 	w.WriteHeader(status)
 	if err := pageTemplates.ExecuteTemplate(w, name, data); err != nil {
 		log.Printf("render %s: %v", name, err)
-	}
-}
-
-// requireAdminPage is requireAdmin for HTML routes: bounce to /login instead
-// of writing a JSON 401.
-func (s *Server) requireAdminPage(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.AdminToken == "" || s.adminTokenMatches(adminTokenFromRequest(r)) {
-			next(w, r)
-			return
-		}
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	}
 }
 
@@ -102,54 +89,25 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 type loginPage struct {
 	basePage
-	BadToken bool
+	BadToken bool // legacy field kept so the template compiles during transition
 }
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	if s.AdminToken == "" {
-		http.Redirect(w, r, "/projects", http.StatusSeeOther)
-		return
-	}
 	s.renderPage(w, http.StatusOK, "login.gohtml", loginPage{basePage: s.basePage(r, "Log in")})
 }
 
-func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
-	if s.AdminToken == "" {
-		http.Redirect(w, r, "/projects", http.StatusSeeOther)
-		return
-	}
-	token := r.FormValue("token")
-	if !s.adminTokenMatches(token) {
-		s.renderPage(w, http.StatusUnauthorized, "login.gohtml",
-			loginPage{basePage: s.basePage(r, "Log in"), BadToken: true})
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name: adminCookieName, Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		MaxAge: 30 * 24 * 60 * 60,
-	})
-	http.Redirect(w, r, "/projects", http.StatusSeeOther)
-}
-
-func (s *Server) handleLogoutPost(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name: adminCookieName, Value: "", Path: "/", MaxAge: -1,
-	})
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
-}
-
 /* ------------------------------------------------------------------ */
-/* Projects list                                                       */
+/* Projects list (the GAS "My Projects" home)                          */
 /* ------------------------------------------------------------------ */
 
 type projectsPage struct {
 	basePage
-	Projects []*store.Project
+	Projects []*store.ProjectAccess
 }
 
 func (s *Server) handleProjectsPage(w http.ResponseWriter, r *http.Request) {
-	projects, err := s.store.ListProjects(r.Context())
+	user := s.currentUser(r)
+	projects, err := s.store.ListProjectsForUser(r.Context(), user.ID)
 	if err != nil {
 		s.renderPage(w, http.StatusInternalServerError, "error.gohtml",
 			errorPage{basePage: s.basePage(r, "Error"), Message: "could not list projects"})
@@ -160,12 +118,18 @@ func (s *Server) handleProjectsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProjectCreatePage(w http.ResponseWriter, r *http.Request) {
+	user := s.currentUser(r)
 	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
 		http.Redirect(w, r, "/projects?err="+urlQuery("a project needs a name"), http.StatusSeeOther)
 		return
 	}
-	p, err := s.store.CreateProject(r.Context(), name, r.FormValue("description"))
+	wsID, ok := s.userWorkspaceID(r, user)
+	if !ok {
+		http.Redirect(w, r, "/projects?err="+urlQuery("you have no workspace"), http.StatusSeeOther)
+		return
+	}
+	p, err := s.store.CreateWSProject(r.Context(), wsID, user.ID, name, r.FormValue("description"))
 	if err != nil {
 		http.Redirect(w, r, "/projects?err="+urlQuery(err.Error()), http.StatusSeeOther)
 		return
@@ -174,11 +138,15 @@ func (s *Server) handleProjectCreatePage(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleProjectDeletePage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteProject(r.Context(), p.ID); err != nil {
+	if role != store.RoleOwner && role != store.RoleAdmin {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("only the owner can delete a project")), http.StatusSeeOther)
+		return
+	}
+	if err := s.store.DeleteWSProject(r.Context(), p.ID); err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("could not delete project")), http.StatusSeeOther)
 		return
 	}
@@ -186,8 +154,12 @@ func (s *Server) handleProjectDeletePage(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleProjectUpdatePage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
+		return
+	}
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -195,9 +167,8 @@ func (s *Server) handleProjectUpdatePage(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("a project needs a name")), http.StatusSeeOther)
 		return
 	}
-	// UpdateProject takes nil to leave a field alone.
 	newName, newDesc := name, r.FormValue("description")
-	if _, err := s.store.UpdateProject(r.Context(), p.ID, &newName, &newDesc); err != nil {
+	if _, err := s.store.UpdateWSProject(r.Context(), p.ID, &newName, &newDesc); err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery(err.Error())), http.StatusSeeOther)
 		return
 	}
@@ -215,7 +186,9 @@ type errorPage struct {
 
 type projectPage struct {
 	basePage
-	P           *store.Project
+	P           *store.WSProject
+	Role        store.Role
+	CanEdit     bool
 	Files       []*store.File
 	Selected    *store.File
 	Result      *runResult // non-nil only in the response to a Run POST
@@ -226,47 +199,47 @@ type projectPage struct {
 	KV          []*store.KVEntry
 }
 
-// projectOrNotFoundPage is getProjectOr404 for HTML routes.
-func (s *Server) projectOrNotFoundPage(w http.ResponseWriter, r *http.Request) (*store.Project, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		http.NotFound(w, r)
-		return nil, false
+func pageMayEdit(role store.Role) bool {
+	return role == store.RoleEditor || role == store.RoleOwner || role == store.RoleAdmin
+}
+
+// projectOrNotFoundPage is the page-flavoured project resolver.
+func (s *Server) projectOrNotFoundPage(w http.ResponseWriter, r *http.Request) (*store.WSProject, store.Role, *store.User, bool) {
+	p, role, user, status, msg := s.resolveWSProject(r)
+	if status != 0 {
+		if status == http.StatusUnauthorized {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return nil, "", nil, false
+		}
+		s.renderPage(w, status, "error.gohtml",
+			errorPage{basePage: s.basePage(r, "Not found"), Message: msg})
+		return nil, "", nil, false
 	}
-	p, err := s.store.GetProject(r.Context(), id)
-	if errors.Is(err, store.ErrNotFound) {
-		s.renderPage(w, http.StatusNotFound, "error.gohtml",
-			errorPage{basePage: s.basePage(r, "Not found"), Message: "project not found"})
-		return nil, false
-	}
-	if err != nil {
-		s.renderPage(w, http.StatusInternalServerError, "error.gohtml",
-			errorPage{basePage: s.basePage(r, "Error"), Message: "could not look up project"})
-		return nil, false
-	}
-	return p, true
+	return p, role, user, true
 }
 
 // projectPageData assembles everything the workspace template shows.
-func (s *Server) projectPageData(r *http.Request, p *store.Project, result *runResult) (*projectPage, error) {
-	page := &projectPage{basePage: s.basePage(r, p.Name), P: p, Result: result}
+func (s *Server) projectPageData(r *http.Request, p *store.WSProject, role store.Role, result *runResult) (*projectPage, error) {
+	page := &projectPage{
+		basePage: s.basePage(r, p.Name), P: p, Role: role, CanEdit: pageMayEdit(role), Result: result,
+	}
 	var err error
-	if page.Files, err = s.store.ListFiles(r.Context(), p.ID); err != nil {
+	if page.Files, err = s.store.ListWSFiles(r.Context(), p.ID); err != nil {
 		return nil, err
 	}
-	if page.Versions, err = s.store.ListVersions(r.Context(), p.ID); err != nil {
+	if page.Versions, err = s.store.ListWSVersions(r.Context(), p.ID); err != nil {
 		return nil, err
 	}
-	if page.Deployments, err = s.store.ListDeployments(r.Context(), p.ID); err != nil {
+	if page.Deployments, err = s.store.ListWSDeployments(r.Context(), p.ID); err != nil {
 		return nil, err
 	}
-	if page.Triggers, err = s.store.ListTriggers(r.Context(), p.ID); err != nil {
+	if page.Triggers, err = s.store.ListWSTriggers(r.Context(), p.ID); err != nil {
 		return nil, err
 	}
-	if page.Executions, err = s.store.ListExecutions(r.Context(), p.ID, 20, 0); err != nil {
+	if page.Executions, err = s.store.ListWSExecutions(r.Context(), p.ID, 20, 0); err != nil {
 		return nil, err
 	}
-	if page.KV, err = s.store.ListKV(r.Context(), p.ID); err != nil {
+	if page.KV, err = s.store.ListWSKV(r.Context(), p.ID); err != nil {
 		return nil, err
 	}
 
@@ -284,8 +257,8 @@ func (s *Server) projectPageData(r *http.Request, p *store.Project, result *runR
 	return page, nil
 }
 
-func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, status int, p *store.Project, result *runResult) {
-	page, err := s.projectPageData(r, p, result)
+func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, status int, p *store.WSProject, role store.Role, result *runResult) {
+	page, err := s.projectPageData(r, p, role, result)
 	if err != nil {
 		s.renderPage(w, http.StatusInternalServerError, "error.gohtml",
 			errorPage{basePage: s.basePage(r, "Error"), Message: "could not load project"})
@@ -295,11 +268,11 @@ func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, statu
 }
 
 func (s *Server) handleProjectPage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
 		return
 	}
-	s.renderProjectPage(w, r, http.StatusOK, p, nil)
+	s.renderProjectPage(w, r, http.StatusOK, p, role, nil)
 }
 
 /* ------------------------------------------------------------------ */
@@ -320,8 +293,12 @@ func sanitizeFileName(raw string) string {
 }
 
 func (s *Server) handleNewFilePage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
+		return
+	}
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
 		return
 	}
 	name := sanitizeFileName(r.FormValue("name"))
@@ -330,7 +307,7 @@ func (s *Server) handleNewFilePage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, back+"?err="+urlQuery("a file needs a name"), http.StatusSeeOther)
 		return
 	}
-	if _, err := s.store.UpsertFile(r.Context(), p.ID, name, newFileTemplate); err != nil {
+	if _, err := s.store.UpsertWSFile(r.Context(), p.ID, name, newFileTemplate); err != nil {
 		http.Redirect(w, r, back+"?err="+urlQuery("could not create file"), http.StatusSeeOther)
 		return
 	}
@@ -338,8 +315,12 @@ func (s *Server) handleNewFilePage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveFilePage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
+		return
+	}
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
 		return
 	}
 	name := r.PathValue("name")
@@ -349,7 +330,7 @@ func (s *Server) handleSaveFilePage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, back+"&err="+urlQuery("file too large"), http.StatusSeeOther)
 		return
 	}
-	if _, err := s.store.UpsertFile(r.Context(), p.ID, name, content); err != nil {
+	if _, err := s.store.UpsertWSFile(r.Context(), p.ID, name, content); err != nil {
 		http.Redirect(w, r, back+"&err="+urlQuery("could not save file"), http.StatusSeeOther)
 		return
 	}
@@ -357,11 +338,15 @@ func (s *Server) handleSaveFilePage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteFilePage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteFile(r.Context(), p.ID, r.PathValue("name")); err != nil {
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
+		return
+	}
+	if err := s.store.DeleteWSFile(r.Context(), p.ID, r.PathValue("name")); err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("could not delete file")), http.StatusSeeOther)
 		return
 	}
@@ -370,16 +355,20 @@ func (s *Server) handleDeleteFilePage(w http.ResponseWriter, r *http.Request) {
 
 // handleRunFilePage runs the file and renders the workspace with the full
 // result in place — the one POST that answers with a page rather than a
-// redirect, because the fresh result (bytecode included) exists only in
-// this response. Refreshing will re-POST, which re-runs; the execution is
-// recorded either way.
+// redirect, because the fresh result (bytecode and app calls included)
+// exists only in this response. Refreshing will re-POST, which re-runs; the
+// execution is recorded either way.
 func (s *Server) handleRunFilePage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, user, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
 		return
 	}
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
+		return
+	}
 	name := r.PathValue("name")
-	f, err := s.store.GetFile(r.Context(), p.ID, name)
+	f, err := s.store.GetWSFile(r.Context(), p.ID, name)
 	if errors.Is(err, store.ErrNotFound) {
 		s.renderPage(w, http.StatusNotFound, "error.gohtml",
 			errorPage{basePage: s.basePage(r, "Not found"), Message: "file not found"})
@@ -392,13 +381,13 @@ func (s *Server) handleRunFilePage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	started := time.Now()
-	result, runErr := s.engine.Run(r.Context(), f.Content)
+	result, runErr := s.engine.RunWithActor(r.Context(), f.Content, actorFor(user, p))
 	finished := time.Now()
 
 	if runErr != nil && !errors.Is(runErr, engine.ErrBusy) && r.Context().Err() != nil {
 		return // client went away; nothing to write back
 	}
-	exec, execErr := s.recordExecution(r.Context(), p.ID, f, nil, "project-run", nil, nil, started, finished, result, runErr)
+	exec, execErr := s.recordExecution(r.Context(), p, f, nil, "project-run", nil, nil, user, started, finished, result, runErr)
 	if execErr != nil {
 		s.renderPage(w, http.StatusInternalServerError, "error.gohtml",
 			errorPage{basePage: s.basePage(r, "Error"), Message: "could not record execution"})
@@ -409,7 +398,7 @@ func (s *Server) handleRunFilePage(w http.ResponseWriter, r *http.Request) {
 			errorPage{basePage: s.basePage(r, "Busy"), Message: "the engine is busy — try again shortly"})
 		return
 	}
-	s.renderProjectPage(w, r, http.StatusOK, p, &runResult{Result: result, ExecutionID: exec.ID})
+	s.renderProjectPage(w, r, http.StatusOK, p, role, &runResult{Result: result, ExecutionID: exec.ID})
 }
 
 /* ------------------------------------------------------------------ */
@@ -417,11 +406,15 @@ func (s *Server) handleRunFilePage(w http.ResponseWriter, r *http.Request) {
 /* ------------------------------------------------------------------ */
 
 func (s *Server) handleCreateVersionPage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
 		return
 	}
-	if _, err := s.store.CreateVersion(r.Context(), p.ID, r.FormValue("label")); err != nil {
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
+		return
+	}
+	if _, err := s.store.CreateWSVersion(r.Context(), p.ID, r.FormValue("label")); err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery(err.Error())), http.StatusSeeOther)
 		return
 	}
@@ -429,8 +422,12 @@ func (s *Server) handleCreateVersionPage(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleRestoreVersionPage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
+		return
+	}
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
 		return
 	}
 	number, err := strconv.Atoi(r.PathValue("number"))
@@ -438,12 +435,12 @@ func (s *Server) handleRestoreVersionPage(w http.ResponseWriter, r *http.Request
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("bad version number")), http.StatusSeeOther)
 		return
 	}
-	v, err := s.store.GetVersionByNumber(r.Context(), p.ID, number)
+	v, err := s.store.GetWSVersionByNumber(r.Context(), p.ID, number)
 	if err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("version not found")), http.StatusSeeOther)
 		return
 	}
-	if err := s.store.RestoreVersion(r.Context(), p.ID, v.ID); err != nil {
+	if err := s.store.RestoreWSVersion(r.Context(), p.ID, v.ID); err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("could not restore version")), http.StatusSeeOther)
 		return
 	}
@@ -451,11 +448,15 @@ func (s *Server) handleRestoreVersionPage(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleCreateDeploymentPage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
 		return
 	}
-	f, err := s.store.GetFile(r.Context(), p.ID, r.FormValue("fileName"))
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
+		return
+	}
+	f, err := s.store.GetWSFile(r.Context(), p.ID, r.FormValue("fileName"))
 	if errors.Is(err, store.ErrNotFound) {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("file not found")), http.StatusSeeOther)
 		return
@@ -464,7 +465,7 @@ func (s *Server) handleCreateDeploymentPage(w http.ResponseWriter, r *http.Reque
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("could not look up file")), http.StatusSeeOther)
 		return
 	}
-	if _, err := s.store.CreateDeployment(r.Context(), p.ID, f.ID, nil); err != nil {
+	if _, err := s.store.CreateWSDeployment(r.Context(), p.ID, f.ID, nil); err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery(err.Error())), http.StatusSeeOther)
 		return
 	}
@@ -472,20 +473,24 @@ func (s *Server) handleCreateDeploymentPage(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleToggleDeploymentPage(w http.ResponseWriter, r *http.Request) {
-	s.mutateDeployment(w, r, func(depID int64, enabled bool) error {
-		return s.store.SetDeploymentEnabled(r.Context(), depID, !enabled)
+	s.mutateWSDeployment(w, r, func(depID int64, enabled bool) error {
+		return s.store.SetWSDeploymentEnabled(r.Context(), depID, !enabled)
 	})
 }
 
 func (s *Server) handleDeleteDeploymentPage(w http.ResponseWriter, r *http.Request) {
-	s.mutateDeployment(w, r, func(depID int64, _ bool) error {
-		return s.store.DeleteDeployment(r.Context(), depID)
+	s.mutateWSDeployment(w, r, func(depID int64, _ bool) error {
+		return s.store.DeleteWSDeployment(r.Context(), depID)
 	})
 }
 
-func (s *Server) mutateDeployment(w http.ResponseWriter, r *http.Request, fn func(depID int64, enabled bool) error) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+func (s *Server) mutateWSDeployment(w http.ResponseWriter, r *http.Request, fn func(depID int64, enabled bool) error) {
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
+		return
+	}
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
 		return
 	}
 	depID, err := strconv.ParseInt(r.PathValue("depId"), 10, 64)
@@ -493,7 +498,7 @@ func (s *Server) mutateDeployment(w http.ResponseWriter, r *http.Request, fn fun
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("bad deployment id")), http.StatusSeeOther)
 		return
 	}
-	dep, err := s.store.GetDeployment(r.Context(), depID)
+	dep, err := s.store.GetWSDeployment(r.Context(), depID)
 	if err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("deployment not found")), http.StatusSeeOther)
 		return
@@ -506,14 +511,18 @@ func (s *Server) mutateDeployment(w http.ResponseWriter, r *http.Request, fn fun
 }
 
 func (s *Server) handleCreateTriggerPage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
+		return
+	}
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
 		return
 	}
 	backErr := func(msg string) {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery(msg)), http.StatusSeeOther)
 	}
-	f, err := s.store.GetFile(r.Context(), p.ID, r.FormValue("fileName"))
+	f, err := s.store.GetWSFile(r.Context(), p.ID, r.FormValue("fileName"))
 	if errors.Is(err, store.ErrNotFound) {
 		backErr("file not found")
 		return
@@ -547,8 +556,6 @@ func (s *Server) handleCreateTriggerPage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Same validation the JSON API goes through: NextRun both checks the
-	// schedule fields and produces the first fire time.
 	next, err := scheduler.NextRun(time.Now(), nt.ScheduleType, *nt.IntervalSeconds, nt.DailyTimeUTC)
 	if err != nil {
 		backErr(err.Error())
@@ -556,7 +563,7 @@ func (s *Server) handleCreateTriggerPage(w http.ResponseWriter, r *http.Request)
 	}
 	nt.NextRunAt = scheduler.FormatTime(next)
 
-	if _, err := s.store.CreateTrigger(r.Context(), nt); err != nil {
+	if _, err := s.store.CreateWSTrigger(r.Context(), nt); err != nil {
 		backErr(err.Error())
 		return
 	}
@@ -564,20 +571,24 @@ func (s *Server) handleCreateTriggerPage(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleToggleTriggerPage(w http.ResponseWriter, r *http.Request) {
-	s.mutateTrigger(w, r, func(trigID int64, enabled bool) error {
-		return s.store.SetTriggerEnabled(r.Context(), trigID, !enabled)
+	s.mutateWSTrigger(w, r, func(trigID int64, enabled bool) error {
+		return s.store.SetWSTriggerEnabled(r.Context(), trigID, !enabled)
 	})
 }
 
 func (s *Server) handleDeleteTriggerPage(w http.ResponseWriter, r *http.Request) {
-	s.mutateTrigger(w, r, func(trigID int64, _ bool) error {
-		return s.store.DeleteTrigger(r.Context(), trigID)
+	s.mutateWSTrigger(w, r, func(trigID int64, _ bool) error {
+		return s.store.DeleteWSTrigger(r.Context(), trigID)
 	})
 }
 
-func (s *Server) mutateTrigger(w http.ResponseWriter, r *http.Request, fn func(trigID int64, enabled bool) error) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+func (s *Server) mutateWSTrigger(w http.ResponseWriter, r *http.Request, fn func(trigID int64, enabled bool) error) {
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
+		return
+	}
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
 		return
 	}
 	trigID, err := strconv.ParseInt(r.PathValue("trigId"), 10, 64)
@@ -585,7 +596,7 @@ func (s *Server) mutateTrigger(w http.ResponseWriter, r *http.Request, fn func(t
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("bad trigger id")), http.StatusSeeOther)
 		return
 	}
-	t, err := s.store.GetTrigger(r.Context(), trigID)
+	t, err := s.store.GetWSTrigger(r.Context(), trigID)
 	if err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("trigger not found")), http.StatusSeeOther)
 		return
@@ -598,11 +609,15 @@ func (s *Server) mutateTrigger(w http.ResponseWriter, r *http.Request, fn func(t
 }
 
 func (s *Server) handleDeleteKVPage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, role, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteKV(r.Context(), p.ID, r.PathValue("key")); err != nil {
+	if !pageMayEdit(role) {
+		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("you have view-only access")), http.StatusSeeOther)
+		return
+	}
+	if err := s.store.DeleteWSKV(r.Context(), p.ID, r.PathValue("key")); err != nil {
 		http.Redirect(w, r, fmt.Sprintf("/projects/%d?err=%s", p.ID, urlQuery("could not delete kv entry")), http.StatusSeeOther)
 		return
 	}
@@ -615,12 +630,13 @@ func (s *Server) handleDeleteKVPage(w http.ResponseWriter, r *http.Request) {
 
 type executionPage struct {
 	basePage
-	P    *store.Project
-	Exec *store.Execution
+	P        *store.WSProject
+	Exec     *store.Execution
+	AppCalls []*store.AppCall
 }
 
 func (s *Server) handleExecutionPage(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.projectOrNotFoundPage(w, r)
+	p, _, _, ok := s.projectOrNotFoundPage(w, r)
 	if !ok {
 		return
 	}
@@ -629,7 +645,7 @@ func (s *Server) handleExecutionPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	exec, err := s.store.GetExecution(r.Context(), execID)
+	exec, err := s.store.GetWSExecution(r.Context(), execID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && exec.ProjectID != p.ID) {
 		s.renderPage(w, http.StatusNotFound, "error.gohtml",
 			errorPage{basePage: s.basePage(r, "Not found"), Message: "execution not found"})
@@ -640,8 +656,12 @@ func (s *Server) handleExecutionPage(w http.ResponseWriter, r *http.Request) {
 			errorPage{basePage: s.basePage(r, "Error"), Message: "could not look up execution"})
 		return
 	}
+	calls, _ := s.store.ListExecutionAppCalls(r.Context(), exec.ID)
 	s.renderPage(w, http.StatusOK, "execution.gohtml",
-		executionPage{basePage: s.basePage(r, "Execution #"+strconv.FormatInt(exec.ID, 10)), P: p, Exec: exec})
+		executionPage{
+			basePage: s.basePage(r, "Execution #"+strconv.FormatInt(exec.ID, 10)),
+			P:        p, Exec: exec, AppCalls: calls,
+		})
 }
 
 // urlQuery escapes a flash or file-name value for a query string.

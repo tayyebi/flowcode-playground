@@ -1,0 +1,31 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>General</h1>
+<p class="note">Sandbox limits apply on restart; timeouts and rate limits sooner where
+noted. The service token authenticates the JSON API for scripts — rotating it
+shows the new value exactly once.</p>
+
+<form method="post" action="/admin/general" class="card">
+  <div class="row-form">
+    <input name="timeoutSeconds" type="number" value="{{.Run.TimeoutSeconds}}" placeholder="run timeout (s)" />
+    <input name="maxConcurrent" type="number" value="{{.Run.MaxConcurrent}}" placeholder="max concurrent runs (restart)" />
+  </div>
+  <div class="row-form">
+    <input name="ratePerMinute" type="number" value="{{.Run.RatePerMinute}}" placeholder="site rate / min" />
+    <input name="rateBurst" type="number" value="{{.Run.RateBurst}}" placeholder="site rate burst" />
+  </div>
+  <div class="row-form">
+    <input name="deployRatePerMinute" type="number" value="{{.Run.DeployRatePerMinute}}" placeholder="deploy rate / min" />
+    <input name="deployRateBurst" type="number" value="{{.Run.DeployRateBurst}}" placeholder="deploy rate burst" />
+  </div>
+  <div class="row-form">
+    <input name="outputCapBytes" type="number" value="{{.Run.OutputCapBytes}}" placeholder="output cap (bytes)" />
+  </div>
+  <button type="submit" class="btn btn-primary">Save general settings</button>
+</form>
+
+<form method="post" action="/admin/service-token/rotate" class="inline-form" style="margin-top:1rem">
+  <button type="submit" class="btn btn-danger">Rotate the service token</button>
+</form>
+
+{{template "admin-bottom.gohtml" .}}

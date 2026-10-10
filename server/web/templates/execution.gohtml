@@ -25,4 +25,24 @@
 <pre class="trace">{{.Exec.RunStderr}}</pre>
 {{end}}
 
+{{if .AppCalls}}
+<h2>App calls <span class="muted">· the execution transcript</span></h2>
+<table class="list">
+  <thead><tr><th>App</th><th>Status</th><th>Request</th><th>Response</th><th>Duration</th><th>When</th></tr></thead>
+  <tbody>
+    {{range .AppCalls}}
+    <tr>
+      <td><code>{{.Name}}</code></td>
+      <td>{{.Status}}</td>
+      <td class="muted wrap">{{.Request}}</td>
+      <td class="muted wrap">{{.Response}}</td>
+      <td class="num">{{.DurationMs}} ms</td>
+      <td class="muted">{{.CreatedAt}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<p class="note">Logger entries are not stored here — they live in the admin-configured Loki instance.</p>
+{{end}}
+
 {{template "bottom.gohtml" .}}

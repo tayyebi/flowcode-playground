@@ -1,0 +1,22 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>HTTP app — Configuration</h1>
+<p class="note">UrlFetchApp.fetch runs server-side. An empty allowlist allows every
+destination; one domain per line, <code>*.example.com</code> for subdomains.</p>
+
+<form method="post" action="/admin/http" class="card">
+  <label><input type="checkbox" name="enabled" {{if .HTTP.Enabled}}checked{{end}} /> Enable the HTTP app</label>
+
+  <div class="row-form">
+    <textarea name="allowedDomains" rows="4" placeholder="api.example.com&#10;*.internal.local">{{range .HTTP.AllowedDomains}}{{.}}
+{{end}}</textarea>
+  </div>
+  <div class="row-form">
+    <input name="timeoutSeconds" type="number" value="{{.HTTP.TimeoutSeconds}}" placeholder="timeout (seconds)" />
+    <input name="responseCapBytes" type="number" value="{{.HTTP.ResponseCapBytes}}" placeholder="response cap (bytes)" />
+  </div>
+
+  <button type="submit" class="btn btn-primary">Save HTTP settings</button>
+</form>
+
+{{template "admin-bottom.gohtml" .}}

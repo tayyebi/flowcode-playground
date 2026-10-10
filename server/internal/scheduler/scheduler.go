@@ -5,13 +5,15 @@ import (
 	"log"
 	"time"
 
+	"github.com/tayyebi/flowcode-playground/server/internal/apps"
 	"github.com/tayyebi/flowcode-playground/server/internal/engine"
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
 
 // Scheduler periodically fires due time-driven triggers through the shared
 // engine, records an execution row for each, and best-effort extracts any
-// `store set` calls from the trace into the KV log.
+// `store set` calls from the trace into the KV log. Runs are attributed to
+// the project's owner so quotas and app-call records stay meaningful.
 type Scheduler struct {
 	Store  *store.Store
 	Engine *engine.Engine
@@ -64,7 +66,7 @@ func (sch *Scheduler) Run(done <-chan struct{}) {
 
 func (sch *Scheduler) fireDue(ctx context.Context) {
 	now := sch.Now()
-	due, err := sch.Store.DueTriggers(ctx, FormatTime(now))
+	due, err := sch.Store.WSDueTriggers(ctx, FormatTime(now))
 	if err != nil {
 		log.Printf("scheduler: list due triggers: %v", err)
 		return
@@ -82,27 +84,73 @@ func (sch *Scheduler) fire(ctx context.Context, t *store.Trigger, now time.Time)
 		return
 	}
 
-	result, runErr := sch.Engine.Run(ctx, source)
-	finished := sch.Now()
-
-	fileID := t.FileID
-	exec, recErr := sch.Store.RecordExecution(ctx, store.NewExecution{
-		ProjectID: t.ProjectID, FileID: &fileID, FileName: t.FileName, VersionID: t.VersionID,
-		Source: "trigger", TriggerID: &t.ID,
-		StartedAt: FormatTime(now), FinishedAt: FormatTime(finished),
-		Result: result, Err: runErr,
-	})
-	if recErr != nil {
-		log.Printf("scheduler: trigger %d: record execution: %v", t.ID, recErr)
-	} else if result != nil && result.Run != nil {
-		for k, v := range store.ExtractStoreSets(result.Run.Stderr) {
-			if err := sch.Store.UpsertKV(ctx, t.ProjectID, k, v, &exec.ID); err != nil {
-				log.Printf("scheduler: trigger %d: upsert kv %q: %v", t.ID, k, err)
+	actor := apps.Actor{}
+	if p, perr := sch.Store.GetWSProject(ctx, t.ProjectID); perr == nil {
+		actor.ProjectID = p.ID
+		if p.CreatedBy > 0 {
+			actor.UserID = p.CreatedBy
+			if u, uerr := sch.Store.GetUser(ctx, p.CreatedBy); uerr == nil {
+				actor.Email = u.Email
 			}
 		}
 	}
 
+	result, runErr := sch.Engine.RunWithActor(ctx, source, actor)
+	finished := sch.Now()
+
+	fileID := t.FileID
+	var actorID *int64
+	if actor.UserID > 0 {
+		id := actor.UserID
+		actorID = &id
+	}
+	exec, recErr := sch.Store.RecordWSSExecution(ctx, store.NewExecution{
+		ProjectID: t.ProjectID, FileID: &fileID, FileName: t.FileName, VersionID: t.VersionID,
+		Source: "trigger", TriggerID: &t.ID,
+		StartedAt: FormatTime(now), FinishedAt: FormatTime(finished),
+		Summary: result.Summary(), Err: runErr,
+	}, actorID)
+	if recErr != nil {
+		log.Printf("scheduler: trigger %d: record execution: %v", t.ID, recErr)
+	} else {
+		if result != nil && result.Run != nil {
+			for k, v := range store.ExtractStoreSets(result.Run.Stderr) {
+				if err := sch.Store.UpsertWSKV(ctx, t.ProjectID, k, v, &exec.ID); err != nil {
+					log.Printf("scheduler: trigger %d: upsert kv %q: %v", t.ID, k, err)
+				}
+			}
+		}
+		sch.recordAppCalls(ctx, exec.ID, actorID, result)
+	}
+
 	sch.reschedule(ctx, t, now)
+}
+
+func (sch *Scheduler) recordAppCalls(ctx context.Context, execID int64, userID *int64, result *engine.Result) {
+	if result == nil || len(result.AppCalls) == 0 {
+		return
+	}
+	calls := []*store.AppCall{}
+	for _, c := range result.AppCalls {
+		switch c.Name {
+		case "MailApp.sendEmail", "MailApp.read", "UrlFetchApp.fetch":
+		default:
+			continue // logger lives in Loki only
+		}
+		app := "http"
+		if c.Name == "MailApp.sendEmail" || c.Name == "MailApp.read" {
+			app = "mail"
+		}
+		calls = append(calls, &store.AppCall{
+			ExecutionID: execID, UserID: userID, App: app, Name: c.Name,
+			Status: c.Status, Request: c.Request, Response: c.Response, DurationMs: c.DurationMs,
+		})
+	}
+	if len(calls) > 0 {
+		if err := sch.Store.RecordAppCalls(ctx, calls); err != nil {
+			log.Printf("scheduler: record app calls: %v", err)
+		}
+	}
 }
 
 func (sch *Scheduler) reschedule(ctx context.Context, t *store.Trigger, now time.Time) {
@@ -117,10 +165,10 @@ func (sch *Scheduler) reschedule(ctx context.Context, t *store.Trigger, now time
 	next, err := AdvancePastNow(prev, now, t.ScheduleType, interval, t.DailyTimeUTC)
 	if err != nil {
 		log.Printf("scheduler: trigger %d: compute next run: %v; disabling to avoid a fire-loop", t.ID, err)
-		sch.Store.SetTriggerEnabled(ctx, t.ID, false)
+		sch.Store.SetWSTriggerEnabled(ctx, t.ID, false)
 		return
 	}
-	if err := sch.Store.RecordTriggerRun(ctx, t.ID, FormatTime(now), FormatTime(next)); err != nil {
+	if err := sch.Store.RecordWSTriggerRun(ctx, t.ID, FormatTime(now), FormatTime(next)); err != nil {
 		log.Printf("scheduler: trigger %d: record run: %v", t.ID, err)
 	}
 }
@@ -129,9 +177,9 @@ func (sch *Scheduler) reschedule(ctx context.Context, t *store.Trigger, now time
 // version's frozen snapshot, or the file's current live content.
 func (sch *Scheduler) resolveSource(ctx context.Context, t *store.Trigger) (string, error) {
 	if t.VersionID != nil {
-		return sch.Store.GetVersionFileContent(ctx, *t.VersionID, t.FileName)
+		return sch.Store.GetWSVersionFileContent(ctx, *t.VersionID, t.FileName)
 	}
-	f, err := sch.Store.GetFile(ctx, t.ProjectID, t.FileName)
+	f, err := sch.Store.GetWSFile(ctx, t.ProjectID, t.FileName)
 	if err != nil {
 		return "", err
 	}
@@ -139,7 +187,7 @@ func (sch *Scheduler) resolveSource(ctx context.Context, t *store.Trigger) (stri
 }
 
 func (sch *Scheduler) prune(ctx context.Context) {
-	n, err := sch.Store.PruneExecutions(ctx, sch.RetentionKeepPerProject)
+	n, err := sch.Store.PruneWSExecutions(ctx, sch.RetentionKeepPerProject)
 	if err != nil {
 		log.Printf("scheduler: prune executions: %v", err)
 		return

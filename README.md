@@ -1,343 +1,161 @@
 # FlowCode Playground
 
-A platform for [FlowCode](https://github.com/tayyebi/flowcode): write a
-workflow in a saved project, press Run, and see the compiler's diagnostics,
-the bytecode it emitted, and a trace of the VM executing it — without
-installing a C toolchain. Projects keep versioned snapshots, deploy a file as
-a public HTTP endpoint, schedule time-driven triggers, and record a
-best-effort log of what a workflow's `store set` calls wrote.
+A Google-Apps-Script-style platform for
+[FlowCode](https://github.com/tayyebi/flowcode): sign in with your
+organization account, write a workflow in a saved project, press Run, and see
+the compiler's diagnostics, the bytecode it emitted, a trace of the VM
+executing it, and a transcript of every app call it made. Projects keep
+versioned snapshots, deploy a file as a public HTTP endpoint (the webhook
+trigger), schedule time-driven triggers, and can call the built-in apps —
+**MailApp**, **UrlFetchApp**, and **Logger** — whose credentials your system
+administrators configure, not the environment.
 
 ```
 docker compose up -d
 ```
 
-Then open <http://localhost:8033>.
+Then open <http://localhost:8033> and sign in with SSO.
 
-## Using it
+## The user journey (the Apps Script mapping)
 
-The [dashboard](http://localhost:8033/projects) lists your projects. A
-project is a saved, named workspace: multiple independently-runnable `.fc`
-files, "Save Version" snapshots, deployments, and time-driven triggers. See
-[Projects, deployments, triggers, and the KV
-log](#projects-deployments-triggers-and-the-kv-log) below for the important
-limitations before relying on any of this for something real.
-
-(The anonymous one-shot playground that used to live at `/` is gone, along
-with its sample picker and shareable permalinks.)
-
----
-
-## What you get
-
-**Three views of the same program**, because compiling and running FlowCode
-produces three genuinely different kinds of information:
-
-| Section | Shows |
+| Google Apps Script | FlowCode Playground |
 |---|---|
-| **Trace** | The VM's execution log — instruction count, every plugin invocation in order, what each `store set` left behind, and whether the workflow completed |
-| **Bytecode** | The decoded `.fcb` image: each instruction, its opcode, and its argument |
-| **Diagnostics** | `fcc`'s errors and warnings, each with its line number |
+| Google account sign-in | OIDC single sign-on (any discovery-based provider) |
+| script.google.com home / My Projects | `/projects` — your personal workspace's projects |
+| Editor + Run + execution log | project page: editor, Run, Trace / Bytecode / Diagnostics / **App calls** |
+| `MailApp.sendEmail()` | `MailApp.sendEmail` (SMTP, admin-configured) |
+| `UrlFetchApp.fetch()` | `UrlFetchApp.fetch` (HTTP, admin-configured allowlist) |
+| `Logger.log()` | `Logger.log` (pushed to Loki, admin-configured) |
+| Web-app deployment / webhooks | public `/deploy/{slug}` URLs — **the playground listens, the core never does** |
+| Time-driven triggers | interval / daily-at-UTC triggers per project file |
+| Admin console | `/admin` — per-app Configuration, Logs, and Rate limits pages |
 
-Plus worked examples in the
-[wiki](https://github.com/tayyebi/flowcode.wiki) to paste into your first
-project.
+## The three apps
 
-### Why warnings matter here
+Workflow source reads exactly like Apps Script — call parameters compile
+into the bytecode and cross the plugin ABI:
 
-FlowCode has **no comment syntax**. Both `# ...` and `// ...` compile to
-`warning: unrecognized line`, and compilation still exits 0 — so a mistyped line
-is silently dropped from a program that otherwise looks like it worked. The
-Diagnostics section exists for exactly this reason: a warning is not a
-non-event in this language.
+```
+workflow: OrderPipeline
 
-### Why the playground ships its own runtime driver
+step notify:
+    MailApp.sendEmail
+        to = "alice@example.com"
+        subject = "Order shipped"
+        body = "It is on the way."
+end
 
-Running a workflow with the stock `flowcode run` prints *nothing* on success.
-The runtime's log level defaults to `FC_LOG_WARN`, and everything worth seeing —
-`vm starting`, each builtin plugin call, `vm completed successfully` — is logged
-at INFO or DEBUG.
+step fetchTracking:
+    UrlFetchApp.fetch
+        url = "https://carrier.example.com/track/123"
+        Accept = "application/json"
+end
 
-So [`runner/fcplay.c`](runner/fcplay.c) is a small driver: flowcode's own
-`src/cli.c` with the log level turned down to DEBUG, resource limits installed
-on itself, and — because the VM's STORE opcode logs nothing, being an opcode
-rather than a plugin call — a post-run dump of every key a `store set` wrote,
-in the one-line format the server's KV log is parsed from. It links against
-flowcode's sources using only public headers, and
-[`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh) fails the build
-if that trace ever stops appearing.
-
----
-
-## Running it
-
-There is no Dockerfile, no prebuilt image, and no CI. `docker compose up -d`
-runs [`scripts/docker-entrypoint.sh`](scripts/docker-entrypoint.sh) inside a
-plain `golang:1.25-alpine` base image: it installs the rest of the toolchain
-(a C compiler, git) and builds FlowCode and the server, then execs the result.
-The repo is bind-mounted into the container, so every
-cache (apk, FlowCode's git clone, Go's module/build cache) and
-every build artifact lives under `.buildcache/` **on the host** — a rebuild
-after a `git pull` only redoes what actually changed, it never redownloads
-dependencies from scratch.
-
-**Deploying to a server**, in full:
-
-```sh
-git pull
-docker compose up -d
-docker compose logs -f
+step logged:
+    Logger.log
+        message = "notification sent"
+end
 ```
 
-The first run compiles everything from a cold cache and takes a few minutes;
-every run after that is fast, since `.buildcache/` persists between runs.
+- **MailApp.sendEmail** — SMTP delivery through the account the
+  administrators configured (`/admin/mail`). Params `to`/`subject`/`body`
+  are optional with the current token as fallback.
+- **MailApp.read** — IMAP inbox read (`folder`, `limit`); the token becomes
+  a JSON array of `{from, subject, date, snippet}`.
+- **UrlFetchApp.fetch** — outbound HTTP (`url`, `method`, `body`; every
+  other param is a request header). The response body becomes the token,
+  capped by the admin-configured size limit.
+- **Logger.log** — one log entry pushed to Loki. Nothing is stored locally:
+  the fresh-run transcript is in-memory, history lives in Loki.
+
+All four are **strict**: a disabled app, missing credentials, an exhausted
+per-user rate limit, or an unreachable backend halts the workflow with a
+clear trace line. A logger that silently drops entries is worse than one
+that fails loudly.
+
+## Configuration: env is for booting, /admin is for running
+
+The **only application configuration in the environment** is the OIDC
+credentials — the server needs them before it can authenticate anything.
+Everything else lives in the database (`system_settings`) and is managed by
+system administrators in the `/admin` area.
+
+| Env var | Purpose |
+|---|---|
+| `OIDC_ISSUER` | Provider issuer URL (discovery-based, any provider) — **required** |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | OAuth2 client — **required** |
+| `OIDC_REDIRECT_URL` | Defaults to `http://<request-host>/api/auth/callback` |
+| `PORT`, `PLAYGROUND_DB_PATH`, `PLAYGROUND_WORKDIR`, `FLOWCODE_FCC`, `FLOWCODE_RUNNER` | Boot paths (sane defaults in the container) |
+| `TRUST_PROXY` | `1` only behind a proxy you control |
+| `FLOWCODE_REPO` / `FLOWCODE_REF` | Compose build pins |
+
+Admin-managed (`/admin`, stored in SQLite): SMTP/IMAP credentials, the Loki
+push URL (optional basic-auth and tenant), the UrlFetchApp allowlist and
+caps, per-app default and per-user rate limits, app enable toggles, and
+sandbox limits (timeout, concurrency, site rate limits — applied at restart).
+
+### Promoting the first system administrator
+
+There is deliberately no promote UI. Sign in once (so your user row exists),
+then:
 
 ```sh
-docker compose down       # stop the container; .buildcache/ and data/ are untouched
+sqlite3 data/playground.db "UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';"
 ```
 
-Pin FlowCode's revision for a reproducible build — `main` is the convenient
-default, not the reproducible one:
+Reload `/admin` and the full administration sidebar appears. A
+`__service_token` (internal setting, rotatable in /admin → General) lets
+scripts call the JSON API with `Authorization: Bearer`.
 
-```sh
-FLOWCODE_REF=v0.1.0 docker compose up -d
+## Logger → Loki (optional)
+
+Logger.log is third-party-backed, like auth (OIDC) and mail (SMTP). Add the
+optional override file and a single-tenant Loki comes up next to the
+playground:
+
+```
+docker compose -f docker-compose.override.yml up -d
 ```
 
-`FLOWCODE_REF` takes any tag, branch, or commit SHA, and `FLOWCODE_REPO` points
-the build at a fork.
-
-Only port **8033** is ever published to the host; everything else the
-container does is internal.
-
-Configuration, all optional:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `PLAYGROUND_TIMEOUT` | `5s` | Wall-clock limit for one compile or one run |
-| `PLAYGROUND_MAX_CONCURRENT` | `4` | Simultaneous compile+run slots; beyond this, requests queue then 503 |
-| `PLAYGROUND_DEPLOY_RATE_PER_MINUTE` | `60` | Per-IP budget for public `/deploy/{slug}` calls |
-| `PLAYGROUND_DEPLOY_RATE_BURST` | `20` | Burst allowance for `/deploy/{slug}` |
-| `TRUST_PROXY` | `0` | Set to `1` **only** behind a reverse proxy you control — see below |
-| `PLAYGROUND_ADMIN_TOKEN` | *(unset)* | A single shared secret gating every `/api/projects...` route — with the anonymous playground gone, that is the whole API. Unset means those routes are open to anyone who can reach the server. Never gates `/healthz` or a deployment's public URL |
-
-The port (`8033`) and the SQLite path (`/data/playground.db`, bind-mounted
-from `./data` on the host) are fixed in `docker-compose.yml` rather than
-configurable — see it directly to change either.
-
-### Without Docker
-
-Requires Go 1.25+ and a C compiler. The UI is server-rendered from templates
-embedded in the binary — there is no frontend build and no JavaScript
-anywhere.
-
-```sh
-# 1. Build FlowCode and the trace driver
-git clone https://github.com/tayyebi/flowcode.git ../flowcode
-make -C ../flowcode
-cc -std=c11 -O2 -I../flowcode/include -o /tmp/fcplay \
-   $(ls ../flowcode/src/*.c | grep -Ev '/(cli|compiler)\.c$') runner/fcplay.c -ldl
-
-# 2. Build and run the server
-cd server && go build -o /tmp/playground . && cd ..
-FLOWCODE_FCC=../flowcode/fcc \
-FLOWCODE_RUNNER=/tmp/fcplay \
-PLAYGROUND_WORKDIR=/tmp/play \
-PLAYGROUND_DB_PATH=/tmp/playground.db \
-PORT=8033 \
-/tmp/playground
-```
-
----
+Then set Logger → push URL to `http://loki:3100` in `/admin/logger`. The
+admin Logs page for the Logger app is a viewer over Loki's query API; the
+`user`/`project`/`exec` labels make entries filterable. Retention is Loki's
+concern (14 days in the bundled config).
 
 ## Security model
 
-The engine compiles and executes whatever a project author saves — and
-unless an admin token is set, anyone who can reach the server is a project
-author, and a public `/deploy/{slug}` URL re-runs a stored workflow for
-anyone holding it. Two things make that tractable, and one caveat qualifies
-both.
-
-**FlowCode's runtime does no I/O.** All 17 builtin plugins in `src/builtins.c`
-are pass-throughs that log and forward their token — a shipped `http.post` that
-actually posted would be a surprise, so upstream made sure it doesn't. The `os`
-plugin that *does* perform shell execution and network calls is not built by
-`make all`, is not copied into the image, and cannot be loaded anyway: the
-`flowcode` CLI has no plugin flag.
-
-**Defence in depth still applies, but at a different layer.** Because there's
-no Dockerfile, the container itself runs as root and with a writable
-filesystem — it has to, to install packages and compile on every deploy — so
-it does *not* get the uid-10001 / read-only-root / `cap_drop: ALL` hardening
-an earlier version of this repo baked into a purpose-built image. What's left
-in place, all inside `fcplay` and the server itself, independent of how the
-container is set up:
-
-- each submission gets its own work directory, removed when the run ends
-  including on timeout
-- `fcplay` installs `RLIMIT_CPU` (2s), `RLIMIT_AS` (256 MB), `RLIMIT_FSIZE`,
-  `RLIMIT_NOFILE`, and `RLIMIT_NPROC` on itself
-- a wall-clock timeout kills the child's whole **process group** — rlimits alone
-  are not enough, since `RLIMIT_CPU` counts CPU time and a blocked process burns
-  none
-- output is capped at 64 KB per stream, file content at 64 KB, plus per-IP
-  rate limiting on public deploy URLs and a bounded number of concurrent runs
-- children run with a bare environment, so nothing from the server's own env
-  reaches them
-
-The timeout is load-bearing rather than theoretical: `exec_loop` and
-`exec_route` in flowcode's VM assign the jump target unconditionally and there
-is no instruction budget, so a workflow that jumps backwards runs forever.
-
-**The caveat:** this is defence in depth on a shared kernel, not a virtualisation
-boundary — and with the container itself running as root, that kernel boundary
-is weaker than it was. For an untrusted public deployment, put it behind a
-proxy you control and strongly consider running it in a VM or under gVisor.
-
-**On `TRUST_PROXY`:** leave it at `0` unless a reverse proxy you control sets
-`X-Forwarded-For`. Honouring that header unconditionally lets any client forge
-it and get a fresh rate-limit bucket per request — worse than having no limit,
-because it looks like one is working.
-
-Submitted programs are never written to the server's logs.
-
----
-
-## API
-
-### Run results
-
-`POST /api/projects/{id}/files/{name}/run` returns the engine's result — the
-shape every execution path produces (manual runs, triggers, deployments).
-
-A program that fails to compile is a normal outcome and comes back as **200**
-with the details in the body. Non-2xx means the *request* was refused: `400`
-malformed, `413` over 64 KB, `503` too busy.
-
-```jsonc
-{
-  "compile": {
-    "exitCode": 0,
-    "stderr": "",
-    "timedOut": false,
-    "durationMs": 3,
-    "diagnostics": [
-      { "level": "warning", "line": 8, "message": "unrecognized line: ..." }
-    ]
-  },
-  "bytecode": {
-    "version": 1, "instructionCount": 2, "argBlobSize": 20, "sizeBytes": 54,
-    "instructions": [
-      { "index": 0, "opcode": "EMIT", "opcodeHex": "0x01",
-        "argOffset": 0, "argLength": 12, "arg": "\"hello, world\"" }
-    ]
-  },
-  "run": {
-    "exitCode": 0,
-    "stderr": "[flowcode:INFO] vm starting, 2 instructions\n...",
-    "timedOut": false, "durationMs": 2
-  },
-  "truncated": false
-}
-```
-
-`run` is absent when compilation failed. `bytecode` is present whenever `fcc`
-produced a readable image — including runs that only warned.
-
-`GET /healthz` — `{"status": "ok"}`; also pings the database. Backs the
-compose healthcheck.
-
-### Projects API
-
-Everything under `/api/projects...` is gated by `PLAYGROUND_ADMIN_TOKEN` when
-one is set (`POST /api/admin/login {"token": "..."}` trades it for a cookie).
-A project is a folder of independently-runnable `.fc` files — **not** a
-linked multi-file program: `fcc` only ever compiles one file at a time, so
-each file is its own complete workflow, the same way each bundled sample is.
-
-```
-GET/POST   /api/projects                                GET/PATCH/DELETE /api/projects/{id}
-GET/PUT/DELETE /api/projects/{id}/files/{name}           POST .../files/{name}/run
-GET/POST   /api/projects/{id}/versions                   POST .../versions/{n}/restore
-GET/POST   /api/projects/{id}/deployments                PATCH/DELETE .../deployments/{id}
-GET/POST   /api/projects/{id}/triggers                   PATCH/DELETE .../triggers/{id}
-GET        /api/projects/{id}/executions[/{id}]
-GET/DELETE /api/projects/{id}/kv[/{key}]
-```
-
-`ANY /deploy/{slug}` is public, with its own rate limit — see the
-limitations below before using it for anything real.
-
----
+- **The core listens to nothing.** `fcc` and `fcplay` are pure compute; the
+  playground web server owns every socket: HTTP for users, a per-run unix
+  socket for app calls, public deploy URLs as the webhook listener.
+- Runs execute in a sandboxed subprocess: bare environment, own process
+  group, wall-clock timeout, rlimits (CPU, address space, file size,
+  nproc), capped output.
+- OIDC ID tokens are verified against the provider's JWKS; sessions are
+  HMAC-signed cookies with a database-stored secret.
+- Every page and API route requires a signed-in user; project access goes
+  through workspace membership (`EffectiveProjectRole` — viewers are
+  read-only). Foreign project ids return 404, not 403.
+- Public `/deploy/{slug}` traffic is rate-limited and attributed to the
+  project's owner for quotas and app-call records.
+- Secrets (SMTP/IMAP/Loki passwords) are write-only from the admin UI's
+  point of view: forms never echo them, an empty field means "keep".
 
 ## Projects, deployments, triggers, and the KV log
 
-FlowCode's runtime does no I/O (see [Security model](#security-model) above)
-and has no way to accept host-provided input — `fcplay` runs a `.fcb` file
-start to finish with no request data, no stdin, and no read-back of anything
-a `store set` call wrote. That shapes what these features can honestly do
-today:
+A project is a set of independently runnable `.fc` files. Versions snapshot
+all files; restoring one rewrites them. A deployment publishes one file at a
+public URL — any request runs the workflow (the request itself is ignored;
+the URL is the webhook trigger). Triggers run a file on an interval or daily
+at a UTC time. The KV log is a write-side record of what `store set` calls
+left behind — it is not a readable key-value API for scripts.
 
-- **Saved, versioned files** work exactly as you'd expect: multiple files per
-  project, immutable "Save Version" snapshots, restore.
-- **Time-driven triggers** are fully real: the scheduler re-runs a file on
-  its own schedule through the same sandboxed pipeline as everything else,
-  independent of any request/response gap, and records an execution row
-  each time.
-- **Deployments are Phase A only.** Calling a deployment's `/deploy/{slug}`
-  URL **ignores the request** — method, query string, and body are all
-  discarded — and just re-runs the file's workflow with no parameters,
-  returning the raw compile/run result (a note on this ships in the response
-  body and an `X-FlowCode-Deploy-Note` header, so this isn't a silent
-  surprise). It is not yet a real request/response web endpoint.
-- **The KV log is write-side only.** After each run, `fcplay` dumps the final
-  value of every key the workflow's `store set` calls wrote into the trace,
-  and the server parses those lines into the KV panel (values sanitized to
-  quotes-become-apostrophes and truncated at 512 bytes). There is no confirmed
-  `store get`/read-back mechanism in FlowCode's runtime, so a workflow cannot
-  read a previously stored value back mid-run. Treat the KV panel as a
-  debug/audit log, not a working key-value API.
-
-Lifting the last two limitations needs a real host-input/read-back bridge
-into `fcplay` (which is a local file in this repo, so it's ours to extend)
-and possibly upstream FlowCode changes — tracked as a later phase, not
-attempted here.
-
-## Layout
+## Development
 
 ```
-runner/fcplay.c    trace driver: cli.c + DEBUG logging + rlimits + store-set dump
-server/            Go HTTP server
-  main.go            routing, startup, admin token, health
-  adminauth.go       shared-secret gate for /api/projects...
-  projects.go, files.go, versions.go   project/file/version CRUD
-  deployments.go     deployment CRUD + public /deploy/{slug}
-  triggers.go        trigger CRUD
-  executions.go      execution history
-  kv.go              best-effort store-set log
-  web.go             the server-rendered UI: HTML form handlers
-  web/templates/     Go templates for every page (embedded)
-  web/static/        the one stylesheet (embedded)
-  ratelimit.go       per-IP token bucket (public deploy URLs)
-  internal/engine/     the sandboxed compile+run pipeline (fcc/fcplay), shared
-                        by every execution path — projects, deployments,
-                        and triggers alike
-  internal/db/          SQLite schema + embedded migrations
-  internal/store/       typed CRUD over the schema, one file per entity
-  internal/scheduler/   next-run-time math + the trigger-firing ticker
-scripts/smoke.py             end-to-end check against a running instance
-scripts/docker-entrypoint.sh what `docker compose up -d` actually runs: builds
-                              FlowCode and the server, then execs the
-                              playground binary
+cd server && go test ./...      # unit + store + scheduler + engine tests
+make -C ../flowcode test        # core language tests
 ```
 
-## Tests
-
-```sh
-cd server && go test ./...                    # unit tests
-python3 scripts/smoke.py http://localhost:8033  # end-to-end, against a running instance
-```
-
-The Go end-to-end tests skip unless `FLOWCODE_FCC` and `FLOWCODE_RUNNER`
-point at real binaries — see [Without Docker](#without-docker) for how to
-build them locally. There is no CI: run both of the above yourself before
-deploying, and run `scripts/smoke.py` against the real instance after
-`docker compose up -d`.
+The server embeds its templates (`server/web/`); there is no frontend build.
+`fcc` and `fcplay` are located via `FLOWCODE_FCC` / `FLOWCODE_RUNNER`.
+Architecture diagram: [`docs/architecture.md`](docs/architecture.md).

@@ -20,13 +20,15 @@ const (
 )
 
 // User is an OIDC-authenticated identity, upserted on every login keyed by
-// the provider's `sub` claim.
+// the provider's `sub` claim. IsAdmin is promoted manually from the database
+// (UPDATE users SET is_admin = 1 WHERE email = '…'); there is no promote UI.
 type User struct {
 	ID          int64  `json:"id"`
 	Subject     string `json:"subject"`
 	Email       string `json:"email"`
 	Name        string `json:"name"`
 	Picture     string `json:"picture"`
+	IsAdmin     bool   `json:"isAdmin"`
 	CreatedAt   string `json:"createdAt"`
 	LastLoginAt string `json:"lastLoginAt,omitempty"`
 }
@@ -61,14 +63,35 @@ type ProjectShare struct {
 	Name      string `json:"name"`
 }
 
-const userColumns = "id, subject, email, name, picture, created_at, COALESCE(last_login_at, '')"
+const userColumns = "id, subject, email, name, picture, is_admin, created_at, COALESCE(last_login_at, '')"
 
 func scanUser(row rowScanner) (*User, error) {
 	var u User
-	if err := row.Scan(&u.ID, &u.Subject, &u.Email, &u.Name, &u.Picture, &u.CreatedAt, &u.LastLoginAt); err != nil {
+	var isAdmin int
+	if err := row.Scan(&u.ID, &u.Subject, &u.Email, &u.Name, &u.Picture, &isAdmin, &u.CreatedAt, &u.LastLoginAt); err != nil {
 		return nil, err
 	}
+	u.IsAdmin = isAdmin != 0
 	return &u, nil
+}
+
+// ListUsers returns every user, for the admin Users page.
+func (s *Store) ListUsers(ctx context.Context) ([]*User, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userColumns+` FROM users ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*User{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }
 
 // UpsertUserBySubject creates the user for an OIDC `sub` on first login and
@@ -153,7 +176,7 @@ func (s *Store) GetWorkspaceBySlug(ctx context.Context, slug string) (*Workspace
 
 func (s *Store) ListWorkspacesForUser(ctx context.Context, userID int64) ([]*Workspace, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT w.`+stringComma(workspaceColumns, "w.")+`
+		SELECT `+stringComma(workspaceColumns, "w.")+`
 		FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id
 		WHERE m.user_id = ? ORDER BY w.name`, userID)
 	if err != nil {

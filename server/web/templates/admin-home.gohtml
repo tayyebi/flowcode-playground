@@ -1,0 +1,14 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>Administration</h1>
+<p class="note">System administrators are promoted manually from the database —
+<code>UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';</code></p>
+
+<table class="list meta">
+  <tr><th>Mail app</th><td>{{if .Mail}}<span class="tag tag-ok">enabled</span>{{else}}<span class="tag tag-muted">disabled</span>{{end}} <a href="/admin/mail">configure</a></td></tr>
+  <tr><th>HTTP app</th><td>{{if .HTTP}}<span class="tag tag-ok">enabled</span>{{else}}<span class="tag tag-muted">disabled</span>{{end}} <a href="/admin/http">configure</a></td></tr>
+  <tr><th>Logger app</th><td>{{if .Logger}}<span class="tag tag-ok">enabled</span>{{else}}<span class="tag tag-muted">disabled</span>{{end}} <a href="/admin/logger">configure</a></td></tr>
+  <tr><th>Default quotas</th><td>mail {{.Quotas.MailPerMinute}}/min · http {{.Quotas.HTTPPerMinute}}/min · logger {{.Quotas.LoggerPerMinute}}/min</td></tr>
+</table>
+
+{{template "admin-bottom.gohtml" .}}

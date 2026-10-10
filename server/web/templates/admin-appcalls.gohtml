@@ -1,0 +1,27 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>{{if eq .App "mail"}}Mail app{{else if eq .App "http"}}HTTP app{{else}}App{{end}} — Logs</h1>
+<p class="note">Every bridge call this app made, newest first. Logger entries are not here — they live in <a href="/admin/logger/logs">Loki</a>.</p>
+
+{{if .Calls}}
+<table class="list">
+  <thead><tr><th>When</th><th>Name</th><th>Status</th><th>Request</th><th>Response</th><th>Duration</th><th>Execution</th></tr></thead>
+  <tbody>
+    {{range .Calls}}
+    <tr>
+      <td class="muted">{{.CreatedAt}}</td>
+      <td><code>{{.Name}}</code></td>
+      <td>{{.Status}}</td>
+      <td class="muted wrap">{{.Request}}</td>
+      <td class="muted wrap">{{.Response}}</td>
+      <td class="num">{{.DurationMs}} ms</td>
+      <td class="num">#{{.ExecutionID}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="note">No calls recorded yet.</p>
+{{end}}
+
+{{template "admin-bottom.gohtml" .}}

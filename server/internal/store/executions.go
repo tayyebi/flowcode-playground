@@ -4,13 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	"github.com/tayyebi/flowcode-playground/server/internal/engine"
 )
 
 // Execution is one recorded run of a project file, from any of the three
 // sources that can trigger one: a manual project-run, a deployment request,
-// or a scheduled trigger.
+// or a scheduled trigger. ActorID is set for workspace executions (the user
+// the run was attributed to); legacy single-tenant rows leave it NULL.
 type Execution struct {
 	ID              int64  `json:"id"`
 	ProjectID       int64  `json:"projectId"`
@@ -20,6 +19,7 @@ type Execution struct {
 	Source          string `json:"source"` // 'project-run' | 'deployment' | 'trigger'
 	DeploymentID    *int64 `json:"deploymentId,omitempty"`
 	TriggerID       *int64 `json:"triggerId,omitempty"`
+	ActorID         *int64 `json:"actorId,omitempty"`
 	StartedAt       string `json:"startedAt"`
 	FinishedAt      string `json:"finishedAt,omitempty"`
 	DurationMs      *int64 `json:"durationMs,omitempty"`
@@ -32,8 +32,24 @@ type Execution struct {
 	Error           string `json:"error,omitempty"`
 }
 
-// NewExecution is what a caller records after engine.Run returns (or fails
-// outright, in which case Result is nil and Err carries the reason).
+// RunSummary is the flattened outcome of one engine run — the parts the
+// executions table records. The engine maps its own Result into this so the
+// store layer does not depend on it.
+type RunSummary struct {
+	CompileExitCode   int
+	CompileStderr     string
+	CompileTimedOut   bool
+	CompileDurationMs int64
+	HasRun            bool
+	RunExitCode       int
+	RunStderr         string
+	RunTimedOut       bool
+	RunDurationMs     int64
+	Truncated         bool
+}
+
+// NewExecution is what a caller records after a run returns (or fails
+// outright, in which case Summary is nil and Err carries the reason).
 type NewExecution struct {
 	ProjectID    int64
 	FileID       *int64
@@ -44,37 +60,12 @@ type NewExecution struct {
 	TriggerID    *int64
 	StartedAt    string
 	FinishedAt   string
-	Result       *engine.Result
+	Summary      *RunSummary
 	Err          error
 }
 
 func (s *Store) RecordExecution(ctx context.Context, ne NewExecution) (*Execution, error) {
-	var durationMs *int64
-	var compileExit, runExit *int
-	var compileStderr, runStderr string
-	var timedOut, truncated bool
-	var errMsg string
-
-	if ne.Result != nil {
-		ce := ne.Result.Compile.ExitCode
-		compileExit = &ce
-		compileStderr = ne.Result.Compile.Stderr
-		truncated = ne.Result.Truncated
-		timedOut = ne.Result.Compile.TimedOut
-		var total int64
-		total = ne.Result.Compile.DurationMs
-		if ne.Result.Run != nil {
-			re := ne.Result.Run.ExitCode
-			runExit = &re
-			runStderr = ne.Result.Run.Stderr
-			timedOut = timedOut || ne.Result.Run.TimedOut
-			total += ne.Result.Run.DurationMs
-		}
-		durationMs = &total
-	}
-	if ne.Err != nil {
-		errMsg = ne.Err.Error()
-	}
+	durationMs, compileExit, runExit, compileStderr, runStderr, timedOut, truncated, errMsg := executionFields(ne)
 
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO executions (project_id, file_id, file_name, version_id, source, deployment_id, trigger_id,
@@ -198,15 +189,15 @@ func (s *Store) PruneExecutions(ctx context.Context, keepPerProject int) (int64,
 
 // RecordRunWithKV records an execution row and, best-effort, any `store set`
 // calls it produced by parsing the run trace. Shared by project runs,
-// deployments, triggers, and the example seeder so the bookkeeping is
-// identical no matter which path invoked the engine.
+// deployments, and triggers so the bookkeeping is identical no matter which
+// path invoked the engine.
 func (s *Store) RecordRunWithKV(ctx context.Context, ne NewExecution) (*Execution, error) {
 	exec, err := s.RecordExecution(ctx, ne)
 	if err != nil {
 		return nil, err
 	}
-	if ne.Result != nil && ne.Result.Run != nil {
-		for k, v := range ExtractStoreSets(ne.Result.Run.Stderr) {
+	if ne.Summary != nil && ne.Summary.HasRun {
+		for k, v := range ExtractStoreSets(ne.Summary.RunStderr) {
 			s.UpsertKV(ctx, ne.ProjectID, k, v, &exec.ID)
 		}
 	}

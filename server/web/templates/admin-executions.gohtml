@@ -1,0 +1,28 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>Executions <span class="muted">· global audit, newest first</span></h1>
+
+{{if .Audit}}
+<table class="list">
+  <thead><tr><th>#</th><th>Project</th><th>File</th><th>Source</th><th>Actor</th><th>Started</th><th>Compile</th><th>Run</th><th>Error</th></tr></thead>
+  <tbody>
+    {{range .Audit}}
+    <tr>
+      <td class="num">{{.ID}}</td>
+      <td>{{.ProjectName}}</td>
+      <td>{{.FileName}}</td>
+      <td><span class="tag tag-{{.Source}}">{{.Source}}</span></td>
+      <td class="muted">{{.ActorEmail}}</td>
+      <td class="muted">{{.StartedAt}}</td>
+      <td>{{with .CompileExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td>{{with .RunExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="muted wrap">{{.Error}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="note">No executions recorded yet.</p>
+{{end}}
+
+{{template "admin-bottom.gohtml" .}}

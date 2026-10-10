@@ -1,0 +1,43 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>Rate limits — {{.App}} app</h1>
+<p class="note">Default: {{.Default}} calls/minute per user. A per-user override wins when
+present; unchecking "enabled" disables the app for that user entirely.</p>
+
+<div class="row-form">
+  <a href="/admin/quotas?app=mail" class="btn btn-secondary btn-small">mail</a>
+  <a href="/admin/quotas?app=http" class="btn btn-secondary btn-small">http</a>
+  <a href="/admin/quotas?app=logger" class="btn btn-secondary btn-small">logger</a>
+</div>
+
+<table class="list">
+  <thead><tr><th>User</th><th>Override</th><th>Form</th></tr></thead>
+  <tbody>
+    {{range .Rows}}
+    <tr>
+      <td>{{.User.Email}} {{if .User.IsAdmin}}<span class="tag">admin</span>{{end}}</td>
+      <td>
+        {{with .Quota}}{{.CallsPerMinute}}/min{{if not .Enabled}} · disabled{{end}}{{else}}<span class="muted">default</span>{{end}}
+      </td>
+      <td>
+        <form method="post" action="/admin/quotas" class="row-form">
+          <input type="hidden" name="userId" value="{{.User.ID}}" />
+          <input type="hidden" name="app" value="{{$.App}}" />
+          <input name="callsPerMinute" type="number" min="0" placeholder="calls/min" size="10" />
+          <label class="muted"><input type="checkbox" name="enabled" checked /> enabled</label>
+          <button type="submit" class="btn btn-secondary btn-small">Set</button>
+        </form>
+        {{with .Quota}}
+        <form method="post" action="/admin/quotas/delete" class="inline-form">
+          <input type="hidden" name="userId" value="{{.UserID}}" />
+          <input type="hidden" name="app" value="{{$.App}}" />
+          <button type="submit" class="btn btn-danger btn-small">Reset</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+
+{{template "admin-bottom.gohtml" .}}

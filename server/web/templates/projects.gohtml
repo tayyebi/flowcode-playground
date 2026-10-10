@@ -13,7 +13,7 @@
 {{if .Projects}}
 <table class="list">
   <thead>
-    <tr><th>Name</th><th>Description</th><th>Updated</th><th></th></tr>
+    <tr><th>Name</th><th>Description</th><th>Updated</th><th>Your role</th><th></th></tr>
   </thead>
   <tbody>
     {{range .Projects}}
@@ -21,10 +21,13 @@
       <td><a href="/projects/{{.ID}}">{{.Name}}</a></td>
       <td class="muted">{{.Description}}</td>
       <td class="muted">{{.UpdatedAt}}</td>
+      <td><span class="tag">{{.Role}}</span></td>
       <td>
+        {{if eq (printf "%v" .Role) "owner"}}
         <form method="post" action="/projects/{{.ID}}/delete" class="inline-form">
           <button type="submit" class="btn btn-danger btn-small">Delete</button>
         </form>
+        {{end}}
       </td>
     </tr>
     {{end}}

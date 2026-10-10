@@ -1,0 +1,37 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>Mail app — Configuration</h1>
+<p class="note">One admin-configured account per instance, like a workspace-level relay.
+Passwords are write-only: an empty field keeps the current value.</p>
+
+<form method="post" action="/admin/mail" class="card">
+  <label><input type="checkbox" name="enabled" {{if .Mail.Enabled}}checked{{end}} /> Enable the mail app</label>
+
+  <h3>SMTP — MailApp.sendEmail</h3>
+  <div class="row-form">
+    <input name="smtpHost" value="{{.Mail.SMTPHost}}" placeholder="smtp.example.com" />
+    <input name="smtpPort" type="number" value="{{.Mail.SMTPPort}}" placeholder="587" />
+  </div>
+  <div class="row-form">
+    <input name="smtpUsername" value="{{.Mail.SMTPUsername}}" placeholder="username" />
+    <input name="smtpPassword" type="password" placeholder="{{if .Mail.SMTPPassword}}password (unchanged){{else}}password{{end}}" />
+  </div>
+  <div class="row-form">
+    <input name="smtpFrom" value="{{.Mail.SMTPFrom}}" placeholder="from address, e.g. workflows@example.com" />
+  </div>
+  <p class="note">Port 587 uses STARTTLS, port 465 implicit TLS.</p>
+
+  <h3>IMAP — MailApp.read</h3>
+  <div class="row-form">
+    <input name="imapHost" value="{{.Mail.IMAPHost}}" placeholder="imap.example.com" />
+    <input name="imapPort" type="number" value="{{.Mail.IMAPPort}}" placeholder="993" />
+  </div>
+  <div class="row-form">
+    <input name="imapUsername" value="{{.Mail.IMAPUsername}}" placeholder="username (defaults to the SMTP user)" />
+    <input name="imapPassword" type="password" placeholder="{{if .Mail.IMAPPassword}}password (unchanged){{else}}password (defaults to the SMTP password){{end}}" />
+  </div>
+
+  <button type="submit" class="btn btn-primary">Save mail settings</button>
+</form>
+
+{{template "admin-bottom.gohtml" .}}

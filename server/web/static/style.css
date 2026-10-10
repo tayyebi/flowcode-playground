@@ -312,3 +312,13 @@ td.arg { color: var(--text-muted); }
 .tag-project-run { background: var(--bg-sunken); }
 .tag-deployment { background: var(--warn-bg); color: var(--warn); }
 .tag-trigger { background: var(--ok-bg); color: var(--ok); }
+
+/* Administration area: sidebar + content */
+.admin-layout { display: flex; gap: 1.5rem; align-items: flex-start; }
+.admin-sidebar { min-width: 180px; border-right: 1px solid var(--border, #ddd); padding-right: 1rem; }
+.admin-sidebar h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; margin: 1.1rem 0 0.35rem; opacity: 0.7; }
+.admin-sidebar a { display: block; padding: 0.25rem 0.5rem; border-radius: 6px; color: inherit; text-decoration: none; font-size: 0.92rem; }
+.admin-sidebar a:hover { background: rgba(127,127,127,0.12); }
+.admin-sidebar a.active { background: rgba(127,127,127,0.18); font-weight: 600; }
+.admin-content { flex: 1; min-width: 0; }
+@media (max-width: 800px) { .admin-layout { flex-direction: column; } .admin-sidebar { border-right: 0; border-bottom: 1px solid #ddd; padding: 0 0 0.75rem; width: 100%; } }

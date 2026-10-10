@@ -1,6 +1,6 @@
 # FlowCode Playground — no Dockerfile, no prebuilt image, no CI.
 #
-# The service is a plain `golang:1.25-alpine` base image. On every
+# The service is a plain `golang:1.26-alpine` base image. On every
 # `docker compose up -d` it runs scripts/docker-entrypoint.sh, which installs
 # the rest of the toolchain (a C compiler, git) and builds FlowCode and the
 # server — then execs the result. The whole repo is
@@ -18,10 +18,21 @@
 # convenient default, not the reproducible one:
 #
 #   FLOWCODE_REF=v0.1.0 docker compose up -d
+#
+# Authentication is OIDC (any discovery-based provider); the three OIDC
+# variables are the only application configuration in the environment.
+# Everything else — SMTP/IMAP credentials, the Loki push URL, quotas, run
+# limits — is managed by system administrators in the /admin area and stored
+# in the database. Promote the first admin manually:
+#
+#   sqlite3 data/playground.db "UPDATE users SET is_admin=1 WHERE email='you@example.com';"
+#
+# Optional: `docker compose -f docker-compose.override.yml up -d` adds a
+# local Loki for Logger.log (configure Logger → http://loki:3100 in /admin).
 
 services:
   playground:
-    image: golang:1.25-alpine
+    image: golang:1.26-alpine
     container_name: flowcode-playground
     restart: unless-stopped
     working_dir: /src
@@ -37,21 +48,15 @@ services:
       PORT: "8033"
       FLOWCODE_REPO: "${FLOWCODE_REPO:-https://github.com/tayyebi/flowcode.git}"
       FLOWCODE_REF: "${FLOWCODE_REF:-main}"
-      # How long a single compile or run may take before it is killed. The VM
-      # has no instruction budget, so this is what stops a runaway workflow.
-      PLAYGROUND_TIMEOUT: "${PLAYGROUND_TIMEOUT:-5s}"
-      # Concurrent compile+run slots. Requests past this wait, then get a 503.
-      PLAYGROUND_MAX_CONCURRENT: "${PLAYGROUND_MAX_CONCURRENT:-4}"
-      # Budget for public /deploy/{slug} traffic.
-      PLAYGROUND_DEPLOY_RATE_PER_MINUTE: "${PLAYGROUND_DEPLOY_RATE_PER_MINUTE:-60}"
-      PLAYGROUND_DEPLOY_RATE_BURST: "${PLAYGROUND_DEPLOY_RATE_BURST:-20}"
+      # --- the only app configuration in the environment: OIDC ---
+      OIDC_ISSUER: "${OIDC_ISSUER:?set OIDC_ISSUER, e.g. https://auth.example.com/realms/main}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET}"
+      # Defaults to http://<request-host>/api/auth/callback when unset.
+      OIDC_REDIRECT_URL: "${OIDC_REDIRECT_URL:-}"
       # Set to 1 only when a reverse proxy you control sets X-Forwarded-For.
       # Otherwise any client can forge the header and get its own rate bucket.
       TRUST_PROXY: "${TRUST_PROXY:-0}"
-      # A single shared secret gating /api/projects... (saved projects,
-      # deployments, triggers, executions, kv). Leave unset for a fully open
-      # instance. Never gates /healthz or a deployment's public URL.
-      PLAYGROUND_ADMIN_TOKEN: "${PLAYGROUND_ADMIN_TOKEN:-}"
 
     volumes:
       # The whole repo. Source, build caches (.buildcache/), and build
@@ -62,8 +67,8 @@ services:
       # exists, so it has to be a real mount rather than living under
       # .buildcache/ like everything else the entrypoint script controls.
       - ./.buildcache/apk-cache:/etc/apk/cache
-      # Persistent SQLite database (projects, versions, deployments,
-      # triggers, executions, kv log) — must survive restarts and rebuilds.
+      # Persistent SQLite database (users, workspaces, projects, executions,
+      # app calls, settings) — must survive restarts and rebuilds.
       - ./data:/data
 
     healthcheck:
@@ -71,8 +76,8 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
-      # The first run compiles FlowCode, the frontend, and the server from
-      # scratch — give it real time before the healthcheck starts failing.
+      # The first run compiles FlowCode and the server from scratch — give it
+      # real time before the healthcheck starts failing.
       start_period: 180s
 
     logging:

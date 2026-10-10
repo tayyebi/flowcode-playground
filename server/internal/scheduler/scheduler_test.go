@@ -32,34 +32,56 @@ func newTestScheduler(t *testing.T) (*Scheduler, *store.Store) {
 	return sch, st
 }
 
+// seedWorkspace creates a user, their workspace, a project with one file —
+// the minimum the ws_* scheduler path needs.
+func seedWorkspace(t *testing.T, st *store.Store) *store.WSProject {
+	t.Helper()
+	ctx := context.Background()
+	u, err := st.UpsertUserBySubject(ctx, "test-subject", "dev@example.com", "Dev", "")
+	if err != nil {
+		t.Fatalf("UpsertUserBySubject: %v", err)
+	}
+	ws, err := st.CreateWorkspace(ctx, "Dev")
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := st.AddWorkspaceMember(ctx, ws.ID, u.ID, store.RoleOwner); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	p, err := st.CreateWSProject(ctx, ws.ID, u.ID, "demo", "")
+	if err != nil {
+		t.Fatalf("CreateWSProject: %v", err)
+	}
+	if _, err := st.UpsertWSFile(ctx, p.ID, "main.fc", "workflow: A\n"); err != nil {
+		t.Fatalf("UpsertWSFile: %v", err)
+	}
+	return p
+}
+
 func TestFireDueRecordsExecutionAndReschedules(t *testing.T) {
 	ctx := context.Background()
 	sch, st := newTestScheduler(t)
-
-	p, err := st.CreateProject(ctx, "demo", "")
+	p := seedWorkspace(t, st)
+	f, err := st.GetWSFile(ctx, p.ID, "main.fc")
 	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	f, err := st.UpsertFile(ctx, p.ID, "main.fc", "workflow: A\n")
-	if err != nil {
-		t.Fatalf("UpsertFile: %v", err)
+		t.Fatalf("GetWSFile: %v", err)
 	}
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	trig, err := st.CreateTrigger(ctx, store.NewTrigger{
+	trig, err := st.CreateWSTrigger(ctx, store.NewTrigger{
 		ProjectID: p.ID, FileID: f.ID, ScheduleType: "interval",
 		IntervalSeconds: intPtr(60), NextRunAt: FormatTime(now),
 	})
 	if err != nil {
-		t.Fatalf("CreateTrigger: %v", err)
+		t.Fatalf("CreateWSTrigger: %v", err)
 	}
 
 	sch.Now = func() time.Time { return now }
 	sch.fireDue(ctx)
 
-	execs, err := st.ListExecutions(ctx, p.ID, 10, 0)
+	execs, err := st.ListWSExecutions(ctx, p.ID, 10, 0)
 	if err != nil {
-		t.Fatalf("ListExecutions: %v", err)
+		t.Fatalf("ListWSExecutions: %v", err)
 	}
 	if len(execs) != 1 {
 		t.Fatalf("got %d executions, want 1", len(execs))
@@ -70,10 +92,13 @@ func TestFireDueRecordsExecutionAndReschedules(t *testing.T) {
 	if execs[0].TriggerID == nil || *execs[0].TriggerID != trig.ID {
 		t.Errorf("TriggerID = %v, want %d", execs[0].TriggerID, trig.ID)
 	}
+	if execs[0].ActorID == nil {
+		t.Errorf("ActorID = nil, want the project owner attributed")
+	}
 
-	updated, err := st.GetTrigger(ctx, trig.ID)
+	updated, err := st.GetWSTrigger(ctx, trig.ID)
 	if err != nil {
-		t.Fatalf("GetTrigger: %v", err)
+		t.Fatalf("GetWSTrigger: %v", err)
 	}
 	if updated.LastRunAt != FormatTime(now) {
 		t.Errorf("LastRunAt = %q, want %q", updated.LastRunAt, FormatTime(now))
@@ -86,7 +111,7 @@ func TestFireDueRecordsExecutionAndReschedules(t *testing.T) {
 	// A second tick at the same "now" must not fire again: next_run_at is now
 	// in the future relative to the fixed clock.
 	sch.fireDue(ctx)
-	execs, _ = st.ListExecutions(ctx, p.ID, 10, 0)
+	execs, _ = st.ListWSExecutions(ctx, p.ID, 10, 0)
 	if len(execs) != 1 {
 		t.Errorf("got %d executions after a second tick at the same time, want still 1", len(execs))
 	}
@@ -95,26 +120,25 @@ func TestFireDueRecordsExecutionAndReschedules(t *testing.T) {
 func TestFireDueSkipsDisabledTriggers(t *testing.T) {
 	ctx := context.Background()
 	sch, st := newTestScheduler(t)
-
-	p, _ := st.CreateProject(ctx, "demo", "")
-	f, _ := st.UpsertFile(ctx, p.ID, "main.fc", "workflow: A\n")
+	p := seedWorkspace(t, st)
+	f, _ := st.GetWSFile(ctx, p.ID, "main.fc")
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	trig, err := st.CreateTrigger(ctx, store.NewTrigger{
+	trig, err := st.CreateWSTrigger(ctx, store.NewTrigger{
 		ProjectID: p.ID, FileID: f.ID, ScheduleType: "interval",
 		IntervalSeconds: intPtr(60), NextRunAt: FormatTime(now),
 	})
 	if err != nil {
-		t.Fatalf("CreateTrigger: %v", err)
+		t.Fatalf("CreateWSTrigger: %v", err)
 	}
-	if err := st.SetTriggerEnabled(ctx, trig.ID, false); err != nil {
-		t.Fatalf("SetTriggerEnabled: %v", err)
+	if err := st.SetWSTriggerEnabled(ctx, trig.ID, false); err != nil {
+		t.Fatalf("SetWSTriggerEnabled: %v", err)
 	}
 
 	sch.Now = func() time.Time { return now }
 	sch.fireDue(ctx)
 
-	execs, _ := st.ListExecutions(ctx, p.ID, 10, 0)
+	execs, _ := st.ListWSExecutions(ctx, p.ID, 10, 0)
 	if len(execs) != 0 {
 		t.Errorf("got %d executions for a disabled trigger, want 0", len(execs))
 	}

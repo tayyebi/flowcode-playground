@@ -1,0 +1,26 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>Logger app — Configuration</h1>
+<p class="note">Logger.log pushes to Loki and nowhere else — strict mode: an
+unconfigured or unreachable Loki halts the run, exactly like a broken SMTP.
+The basic-auth password is write-only.</p>
+
+<form method="post" action="/admin/logger" class="card">
+  <label><input type="checkbox" name="enabled" {{if .Logger.Enabled}}checked{{end}} /> Enable the logger app</label>
+
+  <div class="row-form">
+    <input name="pushUrl" value="{{.Logger.PushURL}}" placeholder="http://loki:3100/loki/api/v1/push" size="48" />
+  </div>
+  <div class="row-form">
+    <input name="username" value="{{.Logger.Username}}" placeholder="basic-auth username (optional)" />
+    <input name="password" type="password" placeholder="{{if .Logger.Password}}password (unchanged){{else}}password (optional){{end}}" />
+  </div>
+  <div class="row-form">
+    <input name="tenant" value="{{.Logger.Tenant}}" placeholder="X-Scope-OrgID tenant (optional)" />
+    <input name="timeoutSeconds" type="number" value="{{.Logger.TimeoutSeconds}}" placeholder="timeout (seconds)" />
+  </div>
+
+  <button type="submit" class="btn btn-primary">Save logger settings</button>
+</form>
+
+{{template "admin-bottom.gohtml" .}}

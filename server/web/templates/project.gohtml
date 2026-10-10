@@ -2,7 +2,7 @@
 
 <div class="page-head">
   <h1>{{.P.Name}}</h1>
-  <span class="muted slug">{{.P.Slug}}</span>
+  <span class="muted slug">{{.P.Slug}} · your role: {{.Role}}{{if not .CanEdit}} (view-only){{end}}</span>
 </div>
 
 <div class="workspace">
@@ -20,6 +20,7 @@
     {{else}}
     <p class="note">No files yet.</p>
     {{end}}
+    {{if .CanEdit}}
     <form method="post" action="/projects/{{.P.ID}}/files/new" class="row-form">
       <input name="name" placeholder="new-file.fc" required />
       <button type="submit" class="btn btn-secondary btn-small">Add file</button>
@@ -30,13 +31,17 @@
       <input name="description" value="{{.P.Description}}" placeholder="description" />
       <button type="submit" class="btn btn-secondary btn-small">Rename</button>
     </form>
+    {{if eq (printf "%v" .Role) "owner"}}
     <form method="post" action="/projects/{{.P.ID}}/delete" class="inline-form">
       <button type="submit" class="btn btn-danger btn-small">Delete project</button>
     </form>
+    {{end}}
+    {{end}}
   </aside>
 
   <section class="editor">
     {{with .Selected}}
+    {{if $.CanEdit}}
     <form method="post" action="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/save">
       <textarea name="content" rows="24" spellcheck="false" class="source">{{.Content}}</textarea>
       <div class="row-actions">
@@ -52,6 +57,10 @@
         <button type="submit" class="btn btn-danger btn-small">Delete file</button>
       </form>
     </div>
+    {{else}}
+    <textarea rows="24" spellcheck="false" class="source" readonly>{{.Content}}</textarea>
+    <div class="row-actions"><span class="muted">{{.Name}} · read-only</span></div>
+    {{end}}
     {{else}}
     <p class="note">Add a file to get started.</p>
     {{end}}
@@ -94,15 +103,36 @@
   <pre class="trace">{{.Stderr}}</pre>
   {{if .TimedOut}}<p class="flash flash-err">The run was killed by the wall-clock timeout.</p>{{end}}
   {{end}}
+
+  {{if .AppCalls}}
+  <h3>App calls <span class="muted">· the execution transcript</span></h3>
+  <table class="list">
+    <thead><tr><th>App</th><th>Status</th><th>Request</th><th>Response</th><th>Duration</th></tr></thead>
+    <tbody>
+      {{range .AppCalls}}
+      <tr>
+        <td><code>{{.Name}}</code></td>
+        <td>{{.Status}}</td>
+        <td class="muted wrap">{{.Request}}</td>
+        <td class="muted wrap">{{.Response}}</td>
+        <td class="num">{{.DurationMs}} ms</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p class="note">Logger entries also live in Loki; Mail and HTTP records are kept in the project's history.</p>
+  {{end}}
 </section>
 {{end}}
 
 <section id="versions" class="panel-section">
   <h2>Versions</h2>
+  {{if .CanEdit}}
   <form method="post" action="/projects/{{.P.ID}}/versions" class="row-form">
     <input name="label" placeholder="label, e.g. v1" required />
     <button type="submit" class="btn btn-secondary btn-small">Save version</button>
   </form>
+  {{end}}
   {{if .Versions}}
   <table class="list">
     <thead><tr><th>#</th><th>Label</th><th>Saved</th><th></th></tr></thead>
@@ -113,9 +143,11 @@
         <td>{{.Label}}</td>
         <td class="muted">{{.CreatedAt}}</td>
         <td>
+          {{if $.CanEdit}}
           <form method="post" action="/projects/{{$.P.ID}}/versions/{{.Number}}/restore" class="inline-form">
             <button type="submit" class="btn btn-secondary btn-small">Restore</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -128,12 +160,14 @@
 
 <section id="deployments" class="panel-section">
   <h2>Deployments</h2>
+  {{if .CanEdit}}
   <form method="post" action="/projects/{{.P.ID}}/deployments" class="row-form">
     <select name="fileName" required>
       {{range .Files}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
     </select>
     <button type="submit" class="btn btn-secondary btn-small">Create deployment</button>
   </form>
+  {{end}}
   {{if .Deployments}}
   <ul class="item-list">
     {{range .Deployments}}
@@ -142,18 +176,19 @@
       <span class="muted">{{.FileName}}</span>
       <span class="tag {{if .Enabled}}tag-ok{{else}}tag-muted{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
       <span class="item-actions">
+        {{if $.CanEdit}}
         <form method="post" action="/projects/{{$.P.ID}}/deployments/{{.ID}}/toggle" class="inline-form">
           <button type="submit" class="btn btn-secondary btn-small">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
         </form>
         <form method="post" action="/projects/{{$.P.ID}}/deployments/{{.ID}}/delete" class="inline-form">
           <button type="submit" class="btn btn-danger btn-small">Delete</button>
         </form>
+        {{end}}
       </span>
     </li>
     {{end}}
   </ul>
-  <p class="note">Phase A: a deploy URL re-runs the file's workflow and ignores
-  the request — see the README before relying on it.</p>
+  <p class="note">A deploy URL is the workflow's webhook: any request to it runs the workflow.</p>
   {{else}}
   <p class="note">No deployments.</p>
   {{end}}
@@ -161,6 +196,7 @@
 
 <section id="triggers" class="panel-section">
   <h2>Triggers</h2>
+  {{if .CanEdit}}
   <form method="post" action="/projects/{{.P.ID}}/triggers" class="row-form">
     <select name="fileName" required>
       {{range .Files}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
@@ -173,6 +209,7 @@
     <input name="dailyTimeUTC" placeholder="HH:MM" />
     <button type="submit" class="btn btn-secondary btn-small">Create trigger</button>
   </form>
+  {{end}}
   {{if .Triggers}}
   <table class="list">
     <thead><tr><th>File</th><th>Schedule</th><th>Next run</th><th>Last run</th><th></th></tr></thead>
@@ -188,12 +225,14 @@
         <td class="muted">{{.NextRunAt}}</td>
         <td class="muted">{{.LastRunAt}}</td>
         <td>
+          {{if $.CanEdit}}
           <form method="post" action="/projects/{{$.P.ID}}/triggers/{{.ID}}/toggle" class="inline-form">
             <button type="submit" class="btn btn-secondary btn-small">{{if .Enabled}}Pause{{else}}Resume{{end}}</button>
           </form>
           <form method="post" action="/projects/{{$.P.ID}}/triggers/{{.ID}}/delete" class="inline-form">
             <button type="submit" class="btn btn-danger btn-small">Delete</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -240,9 +279,11 @@
         <td><code class="wrap">{{.Value}}</code></td>
         <td class="muted">{{.UpdatedAt}}</td>
         <td>
+          {{if $.CanEdit}}
           <form method="post" action="/projects/{{$.P.ID}}/kv/{{.Key | urlquery}}/delete" class="inline-form">
             <button type="submit" class="btn btn-danger btn-small">Delete</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}

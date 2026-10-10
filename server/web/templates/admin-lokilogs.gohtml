@@ -1,0 +1,24 @@
+{{template "admin-top.gohtml" .}}
+
+<h1>Logger app — Logs <span class="muted">· Loki, last 2 hours</span></h1>
+
+{{if .Error}}
+<p class="flash flash-err">{{.Error}}</p>
+{{else if .Lines}}
+<table class="list">
+  <thead><tr><th>When (UTC)</th><th>Labels</th><th>Line</th></tr></thead>
+  <tbody>
+    {{range .Lines}}
+    <tr>
+      <td class="muted">{{.Timestamp}}</td>
+      <td class="muted">{{.Labels}}</td>
+      <td><code class="wrap">{{.Line}}</code></td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="note">No Logger.log entries in Loki for the last two hours.</p>
+{{end}}
+
+{{template "admin-bottom.gohtml" .}}

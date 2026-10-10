@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Server) handleListExecutions(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.getProjectOr404(w, r)
+	p, _, _, ok := s.wsProjectOr404(w, r)
 	if !ok {
 		return
 	}
@@ -25,7 +25,7 @@ func (s *Server) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 			beforeID = n
 		}
 	}
-	executions, err := s.store.ListExecutions(r.Context(), p.ID, limit, beforeID)
+	executions, err := s.store.ListWSExecutions(r.Context(), p.ID, limit, beforeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list executions")
 		return
@@ -34,15 +34,16 @@ func (s *Server) handleListExecutions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.getProjectOr404(w, r); !ok {
+	p, _, _, ok := s.wsProjectOr404(w, r)
+	if !ok {
 		return
 	}
 	execID, ok := pathInt64(w, r, "execId")
 	if !ok {
 		return
 	}
-	exec, err := s.store.GetExecution(r.Context(), execID)
-	if errors.Is(err, store.ErrNotFound) {
+	exec, err := s.store.GetWSExecution(r.Context(), execID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && exec.ProjectID != p.ID) {
 		writeError(w, http.StatusNotFound, "execution not found")
 		return
 	}
@@ -50,5 +51,6 @@ func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not look up execution")
 		return
 	}
-	writeJSON(w, http.StatusOK, exec)
+	calls, _ := s.store.ListExecutionAppCalls(r.Context(), exec.ID)
+	writeJSON(w, http.StatusOK, map[string]any{"execution": exec, "appCalls": calls})
 }

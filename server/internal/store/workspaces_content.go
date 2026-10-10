@@ -474,24 +474,24 @@ const wsExecutionColumns = `id, project_id, file_id, file_name, version_id, sour
 	started_at, finished_at, duration_ms, compile_exit_code, compile_stderr, run_exit_code, run_stderr,
 	timed_out, truncated, error`
 
-// executionFields flattens an engine result (or outright error) into the
+// executionFields flattens a run summary (or outright error) into the
 // columns both the legacy and ws execution inserts need. Shared so the two
 // tables can never drift in how they record an outcome.
 func executionFields(ne NewExecution) (durationMs *int64, compileExit, runExit *int, compileStderr, runStderr string, timedOut, truncated bool, errMsg string) {
-	if ne.Result != nil {
-		ce := ne.Result.Compile.ExitCode
+	if ne.Summary != nil {
+		ce := ne.Summary.CompileExitCode
 		compileExit = &ce
-		compileStderr = ne.Result.Compile.Stderr
-		truncated = ne.Result.Truncated
-		timedOut = ne.Result.Compile.TimedOut
+		compileStderr = ne.Summary.CompileStderr
+		truncated = ne.Summary.Truncated
+		timedOut = ne.Summary.CompileTimedOut
 		var total int64
-		total = ne.Result.Compile.DurationMs
-		if ne.Result.Run != nil {
-			re := ne.Result.Run.ExitCode
+		total = ne.Summary.CompileDurationMs
+		if ne.Summary.HasRun {
+			re := ne.Summary.RunExitCode
 			runExit = &re
-			runStderr = ne.Result.Run.Stderr
-			timedOut = timedOut || ne.Result.Run.TimedOut
-			total += ne.Result.Run.DurationMs
+			runStderr = ne.Summary.RunStderr
+			timedOut = timedOut || ne.Summary.RunTimedOut
+			total += ne.Summary.RunDurationMs
 		}
 		durationMs = &total
 	}
@@ -549,6 +549,10 @@ func scanWSExecution(row rowScanner) (*Execution, error) {
 	if triggerID.Valid {
 		v := triggerID.Int64
 		e.TriggerID = &v
+	}
+	if actorID.Valid {
+		v := actorID.Int64
+		e.ActorID = &v
 	}
 	if durationMs.Valid {
 		v := durationMs.Int64
@@ -663,4 +667,82 @@ func (s *Store) ListWSKV(ctx context.Context, projectID int64) ([]*KVEntry, erro
 func (s *Store) DeleteWSKV(ctx context.Context, projectID int64, key string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_kv_store WHERE project_id = ? AND key = ?`, projectID, key)
 	return err
+}
+
+// AuditEntry is one ws execution joined with its project and actor, for the
+// global admin executions audit.
+type AuditEntry struct {
+	Execution
+	ProjectName string `json:"projectName"`
+	ActorEmail  string `json:"actorEmail,omitempty"`
+}
+
+// ListWSAudit returns the newest executions across every workspace.
+func (s *Store) ListWSAudit(ctx context.Context, limit int) ([]*AuditEntry, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.id, e.project_id, e.file_id, e.file_name, e.version_id, e.source, e.deployment_id, e.trigger_id, e.actor_id,
+		       e.started_at, e.finished_at, e.duration_ms, e.compile_exit_code, e.compile_stderr, e.run_exit_code, e.run_stderr,
+		       e.timed_out, e.truncated, e.error,
+		       COALESCE(p.name, ''), COALESCE(u.email, '')
+		FROM ws_executions e
+		LEFT JOIN ws_projects p ON p.id = e.project_id
+		LEFT JOIN users u ON u.id = e.actor_id
+		ORDER BY e.id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list ws audit: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*AuditEntry{}
+	for rows.Next() {
+		a := &AuditEntry{}
+		var fileID, versionID, deploymentID, triggerID, durationMs sql.NullInt64
+		var compileExit, runExit sql.NullInt64
+		var finishedAt, compileStderr, runStderr, errMsg sql.NullString
+		var timedOut, truncated int
+		if err := rows.Scan(&a.ID, &a.ProjectID, &fileID, &a.FileName, &versionID, &a.Source, &deploymentID, &triggerID, &a.ActorID,
+			&a.StartedAt, &finishedAt, &durationMs, &compileExit, &compileStderr, &runExit, &runStderr,
+			&timedOut, &truncated, &errMsg, &a.ProjectName, &a.ActorEmail); err != nil {
+			return nil, err
+		}
+		if fileID.Valid {
+			v := fileID.Int64
+			a.FileID = &v
+		}
+		if versionID.Valid {
+			v := versionID.Int64
+			a.VersionID = &v
+		}
+		if deploymentID.Valid {
+			v := deploymentID.Int64
+			a.DeploymentID = &v
+		}
+		if triggerID.Valid {
+			v := triggerID.Int64
+			a.TriggerID = &v
+		}
+		if durationMs.Valid {
+			v := durationMs.Int64
+			a.DurationMs = &v
+		}
+		if compileExit.Valid {
+			v := int(compileExit.Int64)
+			a.CompileExitCode = &v
+		}
+		if runExit.Valid {
+			v := int(runExit.Int64)
+			a.RunExitCode = &v
+		}
+		a.FinishedAt = finishedAt.String
+		a.CompileStderr = compileStderr.String
+		a.RunStderr = runStderr.String
+		a.Error = errMsg.String
+		a.TimedOut = timedOut != 0
+		a.Truncated = truncated != 0
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

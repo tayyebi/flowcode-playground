@@ -15,16 +15,27 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tayyebi/flowcode-playground/server/internal/apps"
 	"github.com/tayyebi/flowcode-playground/server/internal/db"
 	"github.com/tayyebi/flowcode-playground/server/internal/engine"
 	"github.com/tayyebi/flowcode-playground/server/internal/scheduler"
+	"github.com/tayyebi/flowcode-playground/server/internal/settings"
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
 
 // Server holds the configuration and the state that outlives a request.
+//
+// Configuration splits in two by necessity: the OIDC credentials live in the
+// environment because they are needed to boot the identity layer itself, and
+// everything else (app credentials, limits, quotas) is admin-managed rows in
+// system_settings, loaded through the settings manager.
 type Server struct {
 	TrustProxy bool
-	AdminToken string
+
+	auth         *auth
+	serviceToken string
+	settings     *settings.Manager
+	appsSvc      *apps.Service
 
 	engine        *engine.Engine
 	deployLimiter *rateLimiter
@@ -86,29 +97,19 @@ func main() {
 }
 
 func newServerFromEnv() (*Server, error) {
-	timeout, err := time.ParseDuration(env("PLAYGROUND_TIMEOUT", "5s"))
-	if err != nil {
-		return nil, err
+	// The only app configuration in the environment: the OIDC credentials.
+	issuer := os.Getenv("OIDC_ISSUER")
+	clientID := os.Getenv("OIDC_CLIENT_ID")
+	clientSecret := os.Getenv("OIDC_CLIENT_SECRET")
+	if issuer == "" || clientID == "" || clientSecret == "" {
+		return nil, errors.New("OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET are required")
 	}
-	concurrency, err := strconv.Atoi(env("PLAYGROUND_MAX_CONCURRENT", "4"))
-	if err != nil || concurrency < 1 {
-		return nil, errors.New("PLAYGROUND_MAX_CONCURRENT must be a positive integer")
-	}
-
-	deployRpm, err := strconv.Atoi(env("PLAYGROUND_DEPLOY_RATE_PER_MINUTE", "60"))
-	if err != nil || deployRpm < 1 {
-		return nil, errors.New("PLAYGROUND_DEPLOY_RATE_PER_MINUTE must be a positive integer")
-	}
-	deployBurst, err := strconv.Atoi(env("PLAYGROUND_DEPLOY_RATE_BURST", "20"))
-	if err != nil || deployBurst < 1 {
-		return nil, errors.New("PLAYGROUND_DEPLOY_RATE_BURST must be a positive integer")
-	}
+	oidcRedirect := os.Getenv("OIDC_REDIRECT_URL")
 
 	compilerPath := env("FLOWCODE_FCC", "/usr/local/bin/fcc")
 	runnerPath := env("FLOWCODE_RUNNER", "/usr/local/bin/fcplay")
 	workDir := env("PLAYGROUND_WORKDIR", "/run/play")
 	dbPath := env("PLAYGROUND_DB_PATH", "/data/playground.db")
-	adminToken := os.Getenv("PLAYGROUND_ADMIN_TOKEN")
 
 	// Fail loudly at startup rather than returning 500s later: a missing
 	// binary or an unreadable working directory is a broken deploy, and it
@@ -131,19 +132,45 @@ func newServerFromEnv() (*Server, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	eng := engine.New(compilerPath, runnerPath, workDir, timeout, 5*time.Second,
-		maxOutputBytes, concurrency)
-	st := store.New(sqlDB)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	if adminToken == "" {
-		log.Print("PLAYGROUND_ADMIN_TOKEN not set — project management routes are open to anyone who can reach this server")
+	st := store.New(sqlDB)
+	mgr := settings.NewManager(st)
+	if err := mgr.Load(ctx); err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
 	}
+	sessionSecret, err := mgr.EnsureInternal(ctx, settings.KeySessionSecret, 32)
+	if err != nil {
+		return nil, fmt.Errorf("ensure session secret: %w", err)
+	}
+	serviceToken, err := mgr.EnsureInternal(ctx, settings.KeyServiceToken, 24)
+	if err != nil {
+		return nil, fmt.Errorf("ensure service token: %w", err)
+	}
+
+	provider, err := newAuth(ctx, issuer, clientID, clientSecret, oidcRedirect)
+	if err != nil {
+		return nil, err
+	}
+	provider.secret = []byte(sessionSecret)
+
+	appsSvc := apps.New(st, mgr)
+
+	run := mgr.Current().Run
+	eng := engine.New(compilerPath, runnerPath, workDir,
+		time.Duration(run.TimeoutSeconds)*time.Second, 5*time.Second,
+		run.OutputCapBytes, run.MaxConcurrent)
+	eng.Apps = appsSvc
 
 	s := &Server{
 		TrustProxy:    env("TRUST_PROXY", "") == "1",
-		AdminToken:    adminToken,
+		auth:          provider,
+		serviceToken:  serviceToken,
+		settings:      mgr,
+		appsSvc:       appsSvc,
 		engine:        eng,
-		deployLimiter: newRateLimiter(deployRpm, deployBurst, 10*time.Minute),
+		deployLimiter: newRateLimiter(run.DeployRatePerMinute, run.DeployRateBurst, 10*time.Minute),
 		store:         st,
 		scheduler:     scheduler.New(st, eng),
 		sqlDB:         sqlDB,
@@ -152,21 +179,21 @@ func newServerFromEnv() (*Server, error) {
 	return s, nil
 }
 
-const maxOutputBytes = 64 * 1024
-
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
-
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("GET /static/style.css", handleStaticCSS)
 
-	// Server-rendered pages. Every action is a plain form POST.
-	page := s.requireAdminPage
+	// Auth: /login shows the (single-button) sign-in page, /login/go starts
+	// the OIDC redirect, the provider comes back to /api/auth/callback.
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("GET /login", s.handleLoginPage)
-	mux.HandleFunc("POST /login", s.handleLoginPost)
+	mux.HandleFunc("GET /login/go", s.handleLoginStart)
+	mux.HandleFunc("GET /api/auth/callback", s.handleAuthCallback)
 	mux.HandleFunc("POST /logout", s.handleLogoutPost)
 
+	// Server-rendered pages. Every action is a plain form POST.
+	page := s.requireUserPage
 	mux.HandleFunc("GET /projects", page(s.handleProjectsPage))
 	mux.HandleFunc("POST /projects", page(s.handleProjectCreatePage))
 	mux.HandleFunc("GET /projects/{id}", page(s.handleProjectPage))
@@ -187,45 +214,64 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /projects/{id}/executions/{execId}", page(s.handleExecutionPage))
 	mux.HandleFunc("POST /projects/{id}/kv/{key}/delete", page(s.handleDeleteKVPage))
 
-	mux.HandleFunc("POST /api/admin/login", s.handleAdminLogin)
-	mux.HandleFunc("POST /api/admin/logout", s.handleAdminLogout)
+	// System administration area: is_admin-gated sidebar pages.
+	adminPage := s.requireAdminPage
+	mux.HandleFunc("GET /admin", adminPage(s.handleAdminHomePage))
+	mux.HandleFunc("GET /admin/mail", adminPage(s.handleAdminMailPage))
+	mux.HandleFunc("POST /admin/mail", adminPage(s.handleAdminMailSave))
+	mux.HandleFunc("GET /admin/mail/logs", adminPage(s.handleAdminMailLogsPage))
+	mux.HandleFunc("GET /admin/http", adminPage(s.handleAdminHTTPPage))
+	mux.HandleFunc("POST /admin/http", adminPage(s.handleAdminHTTPSave))
+	mux.HandleFunc("GET /admin/http/logs", adminPage(s.handleAdminHTTPLogsPage))
+	mux.HandleFunc("GET /admin/logger", adminPage(s.handleAdminLoggerPage))
+	mux.HandleFunc("POST /admin/logger", adminPage(s.handleAdminLoggerSave))
+	mux.HandleFunc("GET /admin/logger/logs", adminPage(s.handleAdminLoggerLogsPage))
+	mux.HandleFunc("GET /admin/quotas", adminPage(s.handleAdminQuotasPage))
+	mux.HandleFunc("POST /admin/quotas", adminPage(s.handleAdminQuotaSave))
+	mux.HandleFunc("POST /admin/quotas/delete", adminPage(s.handleAdminQuotaDelete))
+	mux.HandleFunc("GET /admin/users", adminPage(s.handleAdminUsersPage))
+	mux.HandleFunc("GET /admin/executions", adminPage(s.handleAdminExecutionsPage))
+	mux.HandleFunc("GET /admin/general", adminPage(s.handleAdminGeneralPage))
+	mux.HandleFunc("POST /admin/general", adminPage(s.handleAdminGeneralSave))
+	mux.HandleFunc("POST /admin/service-token/rotate", adminPage(s.handleAdminRotateServiceToken))
 
-	admin := s.requireAdmin
+	// JSON API — same handlers, session or service-token auth.
+	user := s.requireUser
+	mux.HandleFunc("GET /api/projects", user(s.handleListProjects))
+	mux.HandleFunc("POST /api/projects", user(s.handleCreateProject))
+	mux.HandleFunc("GET /api/projects/{id}", user(s.handleGetProject))
+	mux.HandleFunc("PATCH /api/projects/{id}", user(s.handleUpdateProject))
+	mux.HandleFunc("DELETE /api/projects/{id}", user(s.handleDeleteProject))
 
-	mux.HandleFunc("GET /api/projects", admin(s.handleListProjects))
-	mux.HandleFunc("POST /api/projects", admin(s.handleCreateProject))
-	mux.HandleFunc("GET /api/projects/{id}", admin(s.handleGetProject))
-	mux.HandleFunc("PATCH /api/projects/{id}", admin(s.handleUpdateProject))
-	mux.HandleFunc("DELETE /api/projects/{id}", admin(s.handleDeleteProject))
+	mux.HandleFunc("GET /api/projects/{id}/files", user(s.handleListFiles))
+	mux.HandleFunc("PUT /api/projects/{id}/files/{name}", user(s.handleSaveFile))
+	mux.HandleFunc("DELETE /api/projects/{id}/files/{name}", user(s.handleDeleteFile))
+	mux.HandleFunc("POST /api/projects/{id}/files/{name}/run", user(s.handleRunFile))
 
-	mux.HandleFunc("GET /api/projects/{id}/files", admin(s.handleListFiles))
-	mux.HandleFunc("PUT /api/projects/{id}/files/{name}", admin(s.handleSaveFile))
-	mux.HandleFunc("DELETE /api/projects/{id}/files/{name}", admin(s.handleDeleteFile))
-	mux.HandleFunc("POST /api/projects/{id}/files/{name}/run", admin(s.handleRunFile))
+	mux.HandleFunc("GET /api/projects/{id}/versions", user(s.handleListVersions))
+	mux.HandleFunc("POST /api/projects/{id}/versions", user(s.handleCreateVersion))
+	mux.HandleFunc("GET /api/projects/{id}/versions/{number}", user(s.handleGetVersion))
+	mux.HandleFunc("POST /api/projects/{id}/versions/{number}/restore", user(s.handleRestoreVersion))
 
-	mux.HandleFunc("GET /api/projects/{id}/versions", admin(s.handleListVersions))
-	mux.HandleFunc("POST /api/projects/{id}/versions", admin(s.handleCreateVersion))
-	mux.HandleFunc("GET /api/projects/{id}/versions/{number}", admin(s.handleGetVersion))
-	mux.HandleFunc("POST /api/projects/{id}/versions/{number}/restore", admin(s.handleRestoreVersion))
+	mux.HandleFunc("GET /api/projects/{id}/deployments", user(s.handleListDeployments))
+	mux.HandleFunc("POST /api/projects/{id}/deployments", user(s.handleCreateDeployment))
+	mux.HandleFunc("PATCH /api/projects/{id}/deployments/{depId}", user(s.handleUpdateDeployment))
+	mux.HandleFunc("DELETE /api/projects/{id}/deployments/{depId}", user(s.handleDeleteDeployment))
 
-	mux.HandleFunc("GET /api/projects/{id}/deployments", admin(s.handleListDeployments))
-	mux.HandleFunc("POST /api/projects/{id}/deployments", admin(s.handleCreateDeployment))
-	mux.HandleFunc("PATCH /api/projects/{id}/deployments/{depId}", admin(s.handleUpdateDeployment))
-	mux.HandleFunc("DELETE /api/projects/{id}/deployments/{depId}", admin(s.handleDeleteDeployment))
+	mux.HandleFunc("GET /api/projects/{id}/triggers", user(s.handleListTriggers))
+	mux.HandleFunc("POST /api/projects/{id}/triggers", user(s.handleCreateTrigger))
+	mux.HandleFunc("PATCH /api/projects/{id}/triggers/{trigId}", user(s.handleUpdateTrigger))
+	mux.HandleFunc("DELETE /api/projects/{id}/triggers/{trigId}", user(s.handleDeleteTrigger))
 
-	mux.HandleFunc("GET /api/projects/{id}/triggers", admin(s.handleListTriggers))
-	mux.HandleFunc("POST /api/projects/{id}/triggers", admin(s.handleCreateTrigger))
-	mux.HandleFunc("PATCH /api/projects/{id}/triggers/{trigId}", admin(s.handleUpdateTrigger))
-	mux.HandleFunc("DELETE /api/projects/{id}/triggers/{trigId}", admin(s.handleDeleteTrigger))
+	mux.HandleFunc("GET /api/projects/{id}/executions", user(s.handleListExecutions))
+	mux.HandleFunc("GET /api/projects/{id}/executions/{execId}", user(s.handleGetExecution))
 
-	mux.HandleFunc("GET /api/projects/{id}/executions", admin(s.handleListExecutions))
-	mux.HandleFunc("GET /api/projects/{id}/executions/{execId}", admin(s.handleGetExecution))
+	mux.HandleFunc("GET /api/projects/{id}/kv", user(s.handleListKV))
+	mux.HandleFunc("DELETE /api/projects/{id}/kv/{key}", user(s.handleDeleteKV))
 
-	mux.HandleFunc("GET /api/projects/{id}/kv", admin(s.handleListKV))
-	mux.HandleFunc("DELETE /api/projects/{id}/kv/{key}", admin(s.handleDeleteKV))
-
-	// Public: no admin gate, since a deployment is meant to be reachable by
-	// whoever has its URL.
+	// Public: no auth gate, since a deployment is meant to be reachable by
+	// whoever has its URL. This public URL is also the webhook trigger —
+	// the playground listens, the core never does.
 	mux.HandleFunc("/deploy/{slug}", s.deployLimiter.middleware(s.TrustProxy, s.handleDeploy))
 
 	return logRequests(mux)
@@ -257,10 +303,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // checkWritableDir proves the work directory can actually hold a run.
 //
-// os.MkdirAll succeeds on an existing directory no matter who owns it, which is
-// not enough: mounting a tmpfs over the path replaces the image's chowned
-// directory with a root-owned one, and the failure would otherwise surface as a
-// 500 on the first submission rather than at startup.
+// os.MkdirAll succeeds on an existing directory no matter who owns it, which
+// is not enough: mounting a tmpfs over the path replaces the image's chowned
+// directory with a root-owned one, and the failure would otherwise surface as
+// a 500 on the first submission rather than at startup.
 func checkWritableDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
@@ -334,6 +380,12 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) e
 		return err
 	}
 	return nil
+}
+
+// pathInt64Value parses an {id}-style path value without writing a response;
+// resolveWSProject renders its own errors.
+func pathInt64Value(r *http.Request, name string) (int64, error) {
+	return strconv.ParseInt(r.PathValue(name), 10, 64)
 }
 
 // pathInt64 parses an {id}-style path value, writing a 400 and returning ok
