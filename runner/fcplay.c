@@ -31,8 +31,8 @@
  *      admin-configured settings. The core listens to nothing — the socket
  *      belongs to the engine and lives exactly as long as this run.
  *
- * Everything else — the default token seed — is kept verbatim from cli.c.
- * Dropping it breaks the samples that `store` before they `emit`.
+ * Everything else — the default token seed — is kept verbatim from cli.c:
+ * dropping it breaks workflows that `store` before they `emit`.
  *
  * Links against flowcode's sources using only its public headers.
  */

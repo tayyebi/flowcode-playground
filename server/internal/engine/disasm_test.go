@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// helloFCB is samples/hello-world/hello.fc compiled by fcc, byte for byte.
+// helloFCB is a small hello-world workflow compiled by fcc, byte for byte.
 //
 //	workflow: HelloWorld
 //	step greeting:
