@@ -79,6 +79,11 @@ curl -s -b "$JAR" http://localhost:8033/projects   # authenticated
 
 ## Notes
 
+- **Restarting the playground** must include the bridge: the socat sidecar
+  shares the playground's network namespace, which vanishes when the
+  playground container alone is restarted. Use
+  `docker compose restart playground oidc-localhost-bridge`
+  (or `docker compose up -d`), not `docker compose restart playground`.
 - The mocks have **no authentication at all** — never expose them beyond
   localhost / the compose network.
 - `x/oauth2` sends client credentials via Basic auth on its first token

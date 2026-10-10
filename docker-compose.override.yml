@@ -70,17 +70,16 @@ services:
       - "9400:9400"
 
   # The playground's view of the mock: localhost:9400 inside its own network
-  # namespace, forwarded to the published port on the host.
+  # namespace, forwarded to the mock over the compose network's DNS.
   oidc-localhost-bridge:
     image: alpine/socat
     container_name: flowcode-oidc-bridge
     restart: unless-stopped
     network_mode: "service:playground"
-    command: "TCP-LISTEN:9400,fork,reuseaddr TCP:host.docker.internal:9400"
-    extra_hosts:
-      - "host.docker.internal:host-gateway" # no-op on Docker Desktop, required on Linux
+    command: "TCP-LISTEN:9400,fork,reuseaddr TCP:oidc-mock:9400"
     depends_on:
       - playground
+      - oidc-mock
     logging:
       driver: json-file
       options:
