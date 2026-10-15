@@ -30,6 +30,7 @@ Passwords are write-only: an empty field keeps the current value.</p>
     <input name="imapUsername" value="{{.Mail.IMAPUsername}}" placeholder="username (defaults to the SMTP user)" />
     <input name="imapPassword" type="password" placeholder="{{if .Mail.IMAPPassword}}password (unchanged){{else}}password (defaults to the SMTP password){{end}}" />
   </div>
+  <label><input type="checkbox" name="imapTLS" {{if .Mail.IMAPTLS}}checked{{end}} /> Use TLS for IMAP (uncheck only for a trusted plaintext backend, e.g. the local mock rig)</label>
 
   <button type="submit" class="btn btn-primary">Save mail settings</button>
 </form>

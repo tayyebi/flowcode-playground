@@ -78,6 +78,10 @@ func (s *Server) handleAdminMailSave(w http.ResponseWriter, r *http.Request) {
 	}
 	m.IMAPHost = strings.TrimSpace(r.FormValue("imapHost"))
 	m.IMAPPort = formInt(r, "imapPort", old.IMAPPort)
+	// TLS is the checkbox semantics inverted by hand: unchecked means the
+	// admin wants plaintext IMAP (the local rig); absent field on an old
+	// saved group keeps the true default until the form is saved.
+	m.IMAPTLS = r.FormValue("imapTLS") == "on"
 	m.IMAPUsername = strings.TrimSpace(r.FormValue("imapUsername"))
 	if v := r.FormValue("imapPassword"); v != "" {
 		m.IMAPPassword = v

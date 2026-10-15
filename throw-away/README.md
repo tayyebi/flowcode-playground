@@ -8,7 +8,7 @@ of the directory is the retirement plan.
 | Mock | Replaces | GUI | Database |
 |---|---|---|---|
 | `oidc-mock/` | your OIDC provider | http://localhost:9400 — identity picker on login, identity manager, login log | `data/oidc-mock.json` (identities, signing key, login events) |
-| `mail-mock/` | Mailpit / your SMTP server | http://localhost:8025 — inbox + message view | `data/mail-mock.json` (last 200 messages) |
+| `mail-mock/` | Mailpit / your SMTP+IMAP server | http://localhost:8025 — inbox + message view | `data/mail-mock.json` (last 200 messages) |
 | `loki-mock/` | Loki | http://localhost:3100 — log viewer with filter | `data/loki-mock.json` (last 2000 entries) |
 
 ## With docker compose (everything wired)
@@ -33,8 +33,11 @@ variables at parse time; the override file then pins them to the mock.)
    `sqlite3 data/playground.db "UPDATE users SET is_admin=1 WHERE email='mock@example.com';"`
    then reload — the Administration link appears.
 3. **Mail**: in `/admin/mail`, set SMTP host `mail-mock`, port `1025`, from
-   `playground@localhost`, enable. Run a workflow with `MailApp.sendEmail`
-   and read the inbox at http://localhost:8025.
+   `playground@localhost`; for `MailApp.read` set IMAP host `mail-mock`,
+   port `1143` and **uncheck "Use TLS for IMAP"** (the mock speaks plain
+   IMAP on the compose network); enable. Run a workflow with
+   `MailApp.sendEmail` / `MailApp.read` and read the inbox at
+   http://localhost:8025.
 4. **Logger**: in `/admin/logger`, set the push URL to `http://loki-mock:3100`
    and enable; `Logger.log` entries appear at http://localhost:3100 (and in
    the admin Logger → Logs page, which queries the same store).

@@ -28,6 +28,7 @@ type Mail struct {
 	SMTPFrom     string `json:"smtpFrom"`
 	IMAPHost     string `json:"imapHost"`
 	IMAPPort     int    `json:"imapPort"`
+	IMAPTLS      bool   `json:"imapTLS"`
 	IMAPUsername string `json:"imapUsername"`
 	IMAPPassword string `json:"imapPassword,omitempty"`
 }
@@ -82,7 +83,7 @@ type Snapshot struct {
 
 func defaults() Snapshot {
 	return Snapshot{
-		Mail: Mail{Enabled: false, SMTPPort: 587, IMAPPort: 993},
+		Mail: Mail{Enabled: false, SMTPPort: 587, IMAPPort: 993, IMAPTLS: true},
 		HTTP: HTTP{Enabled: true, TimeoutSeconds: 10, ResponseCapBytes: 64 * 1024},
 		Logger: Logger{
 			Enabled:        false,

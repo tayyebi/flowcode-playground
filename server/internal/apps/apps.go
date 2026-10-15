@@ -308,7 +308,15 @@ func (s *Service) readMail(ctx context.Context, cfg settings.Mail, params map[st
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.IMAPHost, cfg.IMAPPort)
-	c, derr := imapclient.DialTLS(addr, nil)
+	var c *imapclient.Client
+	var derr error
+	if cfg.IMAPTLS {
+		c, derr = imapclient.DialTLS(addr, nil)
+	} else {
+		// Plaintext IMAP is an explicit admin choice for trusted backends
+		// (the local mock rig) — the same trust level as plain SMTP above.
+		c, derr = imapclient.DialInsecure(addr, nil)
+	}
 	if derr != nil {
 		return "", "", "", fmt.Errorf("IMAP dial: %w", derr)
 	}
@@ -333,7 +341,10 @@ func (s *Service) readMail(ctx context.Context, cfg settings.Mail, params map[st
 		seq := new(imap.SeqSet)
 		seq.AddRange(start, mbox.NumMessages)
 
-		fetch := c.Fetch(seq, &imap.FetchOptions{
+		// Fetch takes the SeqSet by value (its NumSet type switch rejects
+		// the pointer form); AddRange is a pointer method, so build with
+		// new() and pass the dereference.
+		fetch := c.Fetch(*seq, &imap.FetchOptions{
 			Envelope:    true,
 			BodySection: []*imap.FetchItemBodySection{{}},
 		})
