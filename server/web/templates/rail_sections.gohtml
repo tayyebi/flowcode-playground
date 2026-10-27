@@ -1,0 +1,17 @@
+<aside class="rail rail-sections">
+  <div class="rail-head">
+    <span class="rail-title" title="{{.Rail.Project.Name}}">{{.Rail.Project.Name}}</span>
+  </div>
+  <nav class="rail-list">
+    {{$pid := .Rail.Project.ID}}{{$sec := .Rail.Section}}
+    <a href="/projects/{{$pid}}" class="rail-link{{if eq $sec "overview"}} active{{end}}">Overview</a>
+    <a href="/projects/{{$pid}}/files" class="rail-link{{if eq $sec "files"}} active{{end}}">Files</a>
+    <a href="/projects/{{$pid}}/versions" class="rail-link{{if eq $sec "versions"}} active{{end}}">Versions</a>
+    <a href="/projects/{{$pid}}/logs" class="rail-link{{if eq $sec "logs"}} active{{end}}">Logs</a>
+    <a href="/projects/{{$pid}}/triggers" class="rail-link{{if eq $sec "triggers"}} active{{end}}">Triggers</a>
+    <a href="/projects/{{$pid}}/executions" class="rail-link{{if eq $sec "executions"}} active{{end}}">Executions</a>
+    <div class="rail-sep"></div>
+    <a href="/projects/{{$pid}}/deployments" class="rail-link{{if eq $sec "deployments"}} active{{end}}">Deployments</a>
+    <a href="/projects/{{$pid}}/kv" class="rail-link{{if eq $sec "kv"}} active{{end}}">KV</a>
+  </nav>
+</aside>

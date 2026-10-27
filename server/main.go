@@ -219,11 +219,19 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/auth/callback", s.handleAuthCallback)
 	mux.HandleFunc("POST /logout", s.handleLogoutPost)
 
-	// Server-rendered pages. Every action is a plain form POST.
+	// Server-rendered pages. Every action is a plain form POST. Each project
+	// section is its own page behind the app shell's rails.
 	page := s.requireUserPage
 	mux.HandleFunc("GET /projects", page(s.handleProjectsPage))
 	mux.HandleFunc("POST /projects", page(s.handleProjectCreatePage))
 	mux.HandleFunc("GET /projects/{id}", page(s.handleProjectPage))
+	mux.HandleFunc("GET /projects/{id}/files", page(s.handleProjectFilesPage))
+	mux.HandleFunc("GET /projects/{id}/versions", page(s.handleProjectVersionsPage))
+	mux.HandleFunc("GET /projects/{id}/logs", page(s.handleProjectLogsPage))
+	mux.HandleFunc("GET /projects/{id}/triggers", page(s.handleProjectTriggersPage))
+	mux.HandleFunc("GET /projects/{id}/executions", page(s.handleProjectExecutionsPage))
+	mux.HandleFunc("GET /projects/{id}/deployments", page(s.handleProjectDeploymentsPage))
+	mux.HandleFunc("GET /projects/{id}/kv", page(s.handleProjectKVPage))
 	mux.HandleFunc("POST /projects/{id}/update", page(s.handleProjectUpdatePage))
 	mux.HandleFunc("POST /projects/{id}/delete", page(s.handleProjectDeletePage))
 	mux.HandleFunc("POST /projects/{id}/files/new", page(s.handleNewFilePage))

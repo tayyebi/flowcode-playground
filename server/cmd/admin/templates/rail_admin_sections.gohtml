@@ -1,0 +1,20 @@
+{{/* The section rail of the selected area. Each app gets Configuration /
+     Logs / Rate limits; System gets its own pages. */}}
+<aside class="rail rail-sections">
+  <div class="rail-head">
+    <span class="rail-title">{{if eq .Rail.Area "mail"}}Mail app{{else if eq .Rail.Area "http"}}HTTP app{{else if eq .Rail.Area "logger"}}Logger app{{else}}System{{end}}</span>
+  </div>
+  <nav class="rail-list">
+    {{$area := .Rail.Area}}{{$sec := .Rail.Section}}
+    {{if eq $area "system"}}
+    <a href="/admin/users" class="rail-link{{if eq $sec "users"}} active{{end}}">Users</a>
+    <a href="/admin/executions" class="rail-link{{if eq $sec "executions"}} active{{end}}">Executions</a>
+    <a href="/admin/administrators" class="rail-link{{if eq $sec "administrators"}} active{{end}}">Administrators</a>
+    <a href="/admin/general" class="rail-link{{if eq $sec "general"}} active{{end}}">General</a>
+    {{else}}
+    <a href="/admin/{{$area}}" class="rail-link{{if eq $sec "config"}} active{{end}}">Configuration</a>
+    <a href="/admin/{{$area}}/logs" class="rail-link{{if eq $sec "logs"}} active{{end}}">Logs</a>
+    <a href="/admin/quotas?app={{$area}}" class="rail-link{{if eq $sec "quotas"}} active{{end}}">Rate limits</a>
+    {{end}}
+  </nav>
+</aside>

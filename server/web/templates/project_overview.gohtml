@@ -1,0 +1,68 @@
+{{template "top.gohtml" .}}
+
+<div class="page-head">
+  <h1>{{.P.Name}}</h1>
+  <span class="muted slug">{{.P.Slug}} · your role: {{.Role}}{{if not .CanEdit}} (view-only){{end}}</span>
+</div>
+
+<div class="overview-grid">
+  <section class="panel-section">
+    <h2>Details</h2>
+    <table class="list meta">
+      <tr><th>Name</th><td>{{.P.Name}}</td></tr>
+      <tr><th>Description</th><td>{{if .P.Description}}{{.P.Description}}{{else}}<span class="muted">—</span>{{end}}</td></tr>
+      <tr><th>Created</th><td class="muted">{{.P.CreatedAt}}</td></tr>
+      <tr><th>Updated</th><td class="muted">{{.P.UpdatedAt}}</td></tr>
+    </table>
+    {{if .CanEdit}}
+    <form method="post" action="/projects/{{.P.ID}}/update" class="row-form">
+      <input name="name" value="{{.P.Name}}" required />
+      <input name="description" value="{{.P.Description}}" placeholder="description" />
+      <button type="submit" class="btn btn-secondary btn-small">Save details</button>
+    </form>
+    {{end}}
+    {{if eq (printf "%v" .Role) "owner"}}
+    <form method="post" action="/projects/{{.P.ID}}/delete" class="inline-form">
+      <button type="submit" class="btn btn-danger btn-small">Delete project</button>
+    </form>
+    {{end}}
+  </section>
+
+  <section class="panel-section">
+    <h2>At a glance</h2>
+    <div class="stat-row">
+      <a class="stat" href="/projects/{{.P.ID}}/files"><span class="stat-num">{{.FileCount}}</span><span class="stat-label">files</span></a>
+      <a class="stat" href="/projects/{{.P.ID}}/versions"><span class="stat-num">{{.VersionCount}}</span><span class="stat-label">versions</span></a>
+      <a class="stat" href="/projects/{{.P.ID}}/deployments"><span class="stat-num">{{.DeploymentCount}}</span><span class="stat-label">deployments</span></a>
+      <a class="stat" href="/projects/{{.P.ID}}/triggers"><span class="stat-num">{{.TriggerCount}}</span><span class="stat-label">triggers</span></a>
+    </div>
+    <p class="note">Save a version before wiring triggers or deployments, so they pin a snapshot instead of the live files.</p>
+  </section>
+</div>
+
+<section class="panel-section">
+  <h2>Recent executions</h2>
+  {{if .RecentExecutions}}
+  <table class="list">
+    <thead><tr><th>#</th><th>File</th><th>Source</th><th>Started</th><th>Compile</th><th>Run</th><th></th></tr></thead>
+    <tbody>
+      {{range .RecentExecutions}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.FileName}}</td>
+        <td><span class="tag tag-{{.Source}}">{{.Source}}</span></td>
+        <td class="muted">{{.StartedAt}}</td>
+        <td>{{with .CompileExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{with .RunExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td><a href="/projects/{{$.P.ID}}/executions/{{.ID}}">trace</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p class="note"><a href="/projects/{{.P.ID}}/executions">All executions →</a></p>
+  {{else}}
+  <p class="note">Nothing has run yet. <a href="/projects/{{.P.ID}}/files">Open a file and press Run.</a></p>
+  {{end}}
+</section>
+
+{{template "bottom.gohtml" .}}

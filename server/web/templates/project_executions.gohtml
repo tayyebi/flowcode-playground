@@ -1,0 +1,29 @@
+{{template "top.gohtml" .}}
+
+<div class="page-head">
+  <h1>Executions</h1>
+  <span class="muted">every run of this project's files, whatever started it</span>
+</div>
+
+{{if .Executions}}
+<table class="list">
+  <thead><tr><th>#</th><th>File</th><th>Source</th><th>Started</th><th>Compile</th><th>Run</th><th></th></tr></thead>
+  <tbody>
+    {{range .Executions}}
+    <tr>
+      <td class="num">{{.ID}}</td>
+      <td>{{.FileName}}</td>
+      <td><span class="tag tag-{{.Source}}">{{.Source}}</span></td>
+      <td class="muted">{{.StartedAt}}</td>
+      <td>{{with .CompileExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td>{{with .RunExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td><a href="/projects/{{$.P.ID}}/executions/{{.ID}}">trace</a></td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="note">Nothing has run yet.</p>
+{{end}}
+
+{{template "bottom.gohtml" .}}

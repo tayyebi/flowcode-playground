@@ -1,0 +1,33 @@
+{{template "top.gohtml" .}}
+
+<div class="page-head">
+  <h1>Logs</h1>
+  <span class="muted">app-call activity for this project · newest first · latest 100</span>
+</div>
+
+{{if .Entries}}
+<table class="list logs-table">
+  <thead>
+    <tr><th>Time</th><th>App</th><th>Call</th><th>Exec</th><th>Status</th><th>Duration</th><th>Request</th><th>Response</th></tr>
+  </thead>
+  <tbody>
+    {{range .Entries}}
+    <tr>
+      <td class="muted slug">{{.When}}</td>
+      <td><span class="tag">{{.App}}</span></td>
+      <td class="mono">{{.Name}}</td>
+      <td>{{if .ExecID}}<a href="/projects/{{$.P.ID}}/executions/{{.ExecID}}">#{{.ExecID}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td>{{.Status}}</td>
+      <td>{{if .DurationMs}}<span class="num">{{.DurationMs}} ms</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="muted wrap">{{if .Request}}{{.Request}}{{else}}—{{end}}</td>
+      <td class="muted wrap">{{if .Response}}{{.Response}}{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<p class="note">Operational records of the Mail, HTTP, and Logger apps for this project. Logger user entries live in Loki.</p>
+{{else}}
+<p class="note">No app calls recorded for this project yet — run a workflow that uses Mail, HTTP, or Logger and its trail appears here.</p>
+{{end}}
+
+{{template "bottom.gohtml" .}}

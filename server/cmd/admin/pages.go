@@ -29,20 +29,36 @@ type basePage struct {
 	FlashOK bool
 }
 
-// adminPage adds the sidebar highlight section.
-type adminPage struct {
-	basePage
-	Section string // "", "mail", "http", "logger", "system"
+// adminRail is the app-shell chrome: which area (Mail / HTTP / Logger /
+// System) the switcher highlights, and which section within it. Area ""
+// is the home page — the section rail is hidden, exactly like the user
+// area's projects home.
+type adminRail struct {
+	Area    string // "", "mail", "http", "logger", "system"
+	Section string // "config", "logs", "quotas", "users", …
 }
 
-func (s *Server) adminBase(r *http.Request, title, section string) adminPage {
-	b := adminPage{basePage: basePage{Title: title}, Section: section}
+// adminPage adds the shell rails to a page.
+type adminPage struct {
+	basePage
+	Rail *adminRail // nil on the login page: bare centered layout
+}
+
+func (s *Server) adminBase(r *http.Request, title string) adminPage {
+	b := adminPage{basePage: basePage{Title: title}}
 	if v := r.URL.Query().Get("ok"); v != "" {
 		b.Flash, b.FlashOK = v, true
 	}
 	if v := r.URL.Query().Get("err"); v != "" {
 		b.Flash = v
 	}
+	return b
+}
+
+// adminShell opens the two-rail app shell for an area page.
+func (s *Server) adminShell(r *http.Request, title, area, section string) adminPage {
+	b := s.adminBase(r, title)
+	b.Rail = &adminRail{Area: area, Section: section}
 	return b
 }
 
@@ -55,7 +71,7 @@ func (s *Server) renderPage(w http.ResponseWriter, status int, name string, data
 }
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	s.renderPage(w, http.StatusOK, "login.gohtml", s.adminBase(r, "Log in", ""))
+	s.renderPage(w, http.StatusOK, "login.gohtml", s.adminBase(r, "Log in"))
 }
 
 /* ------------------------------------------------------------------ */
@@ -114,7 +130,7 @@ func (s *Server) handleAdminHomePage(w http.ResponseWriter, r *http.Request) {
 		Mail, HTTP, Logger bool
 		Quotas             settings.Quotas
 		AdminCount         int
-	}{s.adminBase(r, "Administration", ""), snap.Mail.Enabled, snap.HTTP.Enabled, snap.Logger.Enabled, snap.Quotas, adminCount})
+	}{s.adminShell(r, "Administration", "", ""), snap.Mail.Enabled, snap.HTTP.Enabled, snap.Logger.Enabled, snap.Quotas, adminCount})
 }
 
 /* ------------------------------------------------------------------ */
@@ -126,7 +142,7 @@ func (s *Server) handleAdminMailPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, http.StatusOK, "mail.gohtml", struct {
 		adminPage
 		Mail settings.Mail
-	}{s.adminBase(r, "Mail app", "mail"), m})
+	}{s.adminShell(r, "Mail app", "mail", "config"), m})
 }
 
 func (s *Server) handleAdminMailSave(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +168,7 @@ func (s *Server) handleAdminHTTPPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, http.StatusOK, "http.gohtml", struct {
 		adminPage
 		HTTP settings.HTTP
-	}{s.adminBase(r, "HTTP app", "http"), h})
+	}{s.adminShell(r, "HTTP app", "http", "config"), h})
 }
 
 func (s *Server) handleAdminHTTPSave(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +193,7 @@ func (s *Server) renderAppLogPage(w http.ResponseWriter, r *http.Request, app, t
 		App        string
 		Entries    []applogs.Entry
 		UserFilter string
-	}{s.adminBase(r, title, app), app, tailAppLog(app, r.URL.Query().Get("user")), r.URL.Query().Get("user")})
+	}{s.adminShell(r, title, app, "logs"), app, tailAppLog(app, r.URL.Query().Get("user")), r.URL.Query().Get("user")})
 }
 
 /* ------------------------------------------------------------------ */
@@ -189,7 +205,7 @@ func (s *Server) handleAdminLoggerPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, http.StatusOK, "logger.gohtml", struct {
 		adminPage
 		Logger settings.Logger
-	}{s.adminBase(r, "Logger app", "logger"), l})
+	}{s.adminShell(r, "Logger app", "logger", "config"), l})
 }
 
 func (s *Server) handleAdminLoggerSave(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +256,7 @@ func (s *Server) handleAdminQuotasPage(w http.ResponseWriter, r *http.Request) {
 		App     string
 		Default int
 		Rows    []row
-	}{s.adminBase(r, "Rate limits", app), app, q, rows})
+	}{s.adminShell(r, "Rate limits", app, "quotas"), app, q, rows})
 }
 
 func (s *Server) handleAdminQuotaSave(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +306,7 @@ func (s *Server) handleAdminUsersPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, http.StatusOK, "users.gohtml", struct {
 		adminPage
 		Users []*store.User
-	}{s.adminBase(r, "Users", "system"), users})
+	}{s.adminShell(r, "Users", "system", "users"), users})
 }
 
 func (s *Server) handleAdminExecutionsPage(w http.ResponseWriter, r *http.Request) {
@@ -301,14 +317,14 @@ func (s *Server) handleAdminExecutionsPage(w http.ResponseWriter, r *http.Reques
 	s.renderPage(w, http.StatusOK, "executions.gohtml", struct {
 		adminPage
 		Audit []*store.AuditEntry
-	}{s.adminBase(r, "Executions", "system"), audit})
+	}{s.adminShell(r, "Executions", "system", "executions"), audit})
 }
 
 func (s *Server) handleAdminGeneralPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, http.StatusOK, "general.gohtml", struct {
 		adminPage
 		Run settings.Run
-	}{s.adminBase(r, "General", "system"), s.settings.Current().Run})
+	}{s.adminShell(r, "General", "system", "general"), s.settings.Current().Run})
 }
 
 func (s *Server) handleAdminGeneralSave(w http.ResponseWriter, r *http.Request) {
@@ -375,7 +391,7 @@ func (s *Server) handleAdminAdministratorsPage(w http.ResponseWriter, r *http.Re
 		adminPage
 		Admins         []*store.Administrator
 		CurrentAdminID int64
-	}{s.adminBase(r, "Administrators", "system"), admins, s.currentAdministrator(r).ID})
+	}{s.adminShell(r, "Administrators", "system", "administrators"), admins, s.currentAdministrator(r).ID})
 }
 
 func (s *Server) handleAdminAdministratorAdd(w http.ResponseWriter, r *http.Request) {

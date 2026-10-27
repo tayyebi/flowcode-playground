@@ -1,0 +1,13 @@
+<aside class="rail rail-areas">
+  <div class="rail-head">
+    <span class="rail-title">Admin</span>
+  </div>
+  <nav class="rail-list">
+    {{$area := .Rail.Area}}
+    <a href="/admin/mail" class="rail-link{{if eq $area "mail"}} active{{end}}">Mail app</a>
+    <a href="/admin/http" class="rail-link{{if eq $area "http"}} active{{end}}">HTTP app</a>
+    <a href="/admin/logger" class="rail-link{{if eq $area "logger"}} active{{end}}">Logger app</a>
+    <div class="rail-sep"></div>
+    <a href="/admin/users" class="rail-link{{if eq $area "system"}} active{{end}}">System</a>
+  </nav>
+</aside>

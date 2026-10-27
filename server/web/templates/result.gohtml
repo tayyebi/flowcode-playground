@@ -1,0 +1,55 @@
+<section class="result">
+  <h2>Result <span class="muted">· execution #{{.ExecutionID}}</span></h2>
+
+  {{if .Compile.Diagnostics}}
+  <h3>Diagnostics</h3>
+  <ul class="diagnostics">
+    {{range .Compile.Diagnostics}}
+    <li class="diagnostic diagnostic-{{.Level}}">
+      <span class="diagnostic-level">{{.Level}}</span> line {{.Line}}: {{.Message}}
+    </li>
+    {{end}}
+  </ul>
+  {{end}}
+
+  {{if .Bytecode}}
+  <h3>Bytecode <span class="muted">· {{.Bytecode.InstructionCount}} instructions, {{.Bytecode.SizeBytes}} bytes</span></h3>
+  <table class="bytecode">
+    <thead><tr><th>#</th><th>Opcode</th><th>Arg</th></tr></thead>
+    <tbody>
+      {{range .Bytecode.Instructions}}
+      <tr id="i{{.Index}}">
+        <td class="num">{{.Index}}</td>
+        <td class="opcode">{{.Opcode}}</td>
+        <td class="arg">{{.Arg}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  {{with .Run}}
+  <h3>Trace</h3>
+  <pre class="trace">{{.Stderr}}</pre>
+  {{if .TimedOut}}<p class="flash flash-err">The run was killed by the wall-clock timeout.</p>{{end}}
+  {{end}}
+
+  {{if .AppCalls}}
+  <h3>App calls <span class="muted">· the execution transcript</span></h3>
+  <table class="list">
+    <thead><tr><th>App</th><th>Status</th><th>Request</th><th>Response</th><th>Duration</th></tr></thead>
+    <tbody>
+      {{range .AppCalls}}
+      <tr>
+        <td><code>{{.Name}}</code></td>
+        <td>{{.Status}}</td>
+        <td class="muted wrap">{{.Request}}</td>
+        <td class="muted wrap">{{.Response}}</td>
+        <td class="num">{{.DurationMs}} ms</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p class="note">Logger entries also live in Loki; Mail and HTTP records are kept in the project's history.</p>
+  {{end}}
+</section>

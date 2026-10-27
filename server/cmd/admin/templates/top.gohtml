@@ -4,10 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{.Title}} · Administration</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <!-- ?v= busts the 7-day browser cache nginx gives /static when the
+         stylesheet changes; bump it on every style.css edit. -->
+    <link rel="stylesheet" href="/static/style.css?v=2" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9881;&#65039;</text></svg>" />
   </head>
-  <body>
+  <body{{if .Rail}} class="app"{{end}}>
     <nav class="topnav">
       <a href="/admin" class="topnav-brand">Administration</a>
       <span class="spacer"></span>
@@ -15,28 +17,13 @@
         <button type="submit" class="btn btn-ghost">Log out</button>
       </form>
     </nav>
-    <main class="page admin-layout">
+    {{if .Rail}}
+    <div class="app-body">
+      {{template "rail_areas.gohtml" .}}
+      {{if .Rail.Area}}{{template "rail_admin_sections.gohtml" .}}{{end}}
+      <main class="app-main">
+        {{if .Flash}}<p class="flash {{if .FlashOK}}flash-ok{{else}}flash-err{{end}}">{{.Flash}}</p>{{end}}
+    {{else}}
+    <main class="page">
       {{if .Flash}}<p class="flash {{if .FlashOK}}flash-ok{{else}}flash-err{{end}}">{{.Flash}}</p>{{end}}
-      <aside class="admin-sidebar">
-        <h3>Mail app</h3>
-        <a href="/admin/mail" class="{{if eq .Section "mail"}}active{{end}}">Configuration</a>
-        <a href="/admin/mail/logs" class="{{if eq .Section "mail"}}active{{end}}">Logs</a>
-        <a href="/admin/quotas?app=mail">Rate limits</a>
-
-        <h3>HTTP app</h3>
-        <a href="/admin/http" class="{{if eq .Section "http"}}active{{end}}">Configuration</a>
-        <a href="/admin/http/logs" class="{{if eq .Section "http"}}active{{end}}">Logs</a>
-        <a href="/admin/quotas?app=http">Rate limits</a>
-
-        <h3>Logger app</h3>
-        <a href="/admin/logger" class="{{if eq .Section "logger"}}active{{end}}">Configuration</a>
-        <a href="/admin/logger/logs" class="{{if eq .Section "logger"}}active{{end}}">Logs</a>
-        <a href="/admin/quotas?app=logger">Rate limits</a>
-
-        <h3>System</h3>
-        <a href="/admin/users" class="{{if eq .Section "system"}}active{{end}}">Users</a>
-        <a href="/admin/executions" class="{{if eq .Section "system"}}active{{end}}">Executions</a>
-        <a href="/admin/administrators" class="{{if eq .Section "system"}}active{{end}}">Administrators</a>
-        <a href="/admin/general" class="{{if eq .Section "system"}}active{{end}}">General</a>
-      </aside>
-      <section class="admin-content">
+    {{end}}

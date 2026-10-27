@@ -1,0 +1,39 @@
+{{template "top.gohtml" .}}
+
+<div class="page-head">
+  <h1>Versions</h1>
+  <span class="muted">snapshots of every file, restorable as a set</span>
+</div>
+
+{{if .CanEdit}}
+<form method="post" action="/projects/{{.P.ID}}/versions" class="row-form">
+  <input name="label" placeholder="label, e.g. v1" required />
+  <button type="submit" class="btn btn-secondary btn-small">Save version</button>
+</form>
+{{end}}
+
+{{if .Versions}}
+<table class="list">
+  <thead><tr><th>#</th><th>Label</th><th>Saved</th><th></th></tr></thead>
+  <tbody>
+    {{range .Versions}}
+    <tr>
+      <td class="num">{{.Number}}</td>
+      <td>{{.Label}}</td>
+      <td class="muted">{{.CreatedAt}}</td>
+      <td>
+        {{if $.CanEdit}}
+        <form method="post" action="/projects/{{$.P.ID}}/versions/{{.Number}}/restore" class="inline-form">
+          <button type="submit" class="btn btn-secondary btn-small">Restore</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="note">No versions saved yet.</p>
+{{end}}
+
+{{template "bottom.gohtml" .}}
