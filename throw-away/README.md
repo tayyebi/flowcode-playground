@@ -1,14 +1,15 @@
 # throw-away — the local test rig
 
-Three self-built mocks for testing the playground's third-party
-integrations without any real provider. Each is a single Go file (stdlib
-only) with a simple web GUI and **one JSON file as its database** — the name
-of the directory is the retirement plan.
+Two self-built mocks for testing the playground's third-party integrations
+without any real provider. Each is a single Go file (stdlib only) with a
+simple web GUI and **one JSON file as its database** — the name of the
+directory is the retirement plan. Mail is no longer mocked: the bundled
+send-only relay in the base compose file (the `mailer` service) serves the
+local rig too.
 
 | Mock | Replaces | GUI | Database |
 |---|---|---|---|
 | `oidc-mock/` | your OIDC provider | http://localhost:9400 — identity picker on login, identity manager, login log | `data/oidc-mock.json` (identities, signing key, login events) |
-| `mail-mock/` | Mailpit / your SMTP+IMAP server | http://localhost:8025 — inbox + message view | `data/mail-mock.json` (last 200 messages) |
 | `loki-mock/` | Loki | http://localhost:3100 — log viewer with filter | `data/loki-mock.json` (last 2000 entries) |
 
 ## With docker compose (everything wired)
@@ -19,28 +20,35 @@ cat > .env <<'EOF'
 OIDC_ISSUER=http://localhost:9400
 OIDC_CLIENT_ID=playground
 OIDC_CLIENT_SECRET=mock-secret
+OIDC_ADMIN_CLIENT_ID=playground-admin
+OIDC_ADMIN_CLIENT_SECRET=mock-secret
+ADMIN_EMAILS=admin@example.com
+MAIL_NAME=mail.localhost
 EOF
 docker compose up -d
 ```
 
-(The `.env` exists only because the base compose file hard-requires the OIDC
-variables at parse time; the override file then pins them to the mock.)
+(The `.env` exists because the base compose file hard-requires the OIDC
+variables and MAIL_NAME at parse time; the override file then pins the OIDC
+vars to the mock.)
 
-1. **Sign in**: open http://localhost:8033 → *Continue with SSO* → the mock's
+1. **Sign in**: open https://localhost → *Continue with SSO* → the mock's
    identity picker appears — one click, no passwords. Manage identities
-   (add/remove) at http://localhost:9400.
-2. **Promote yourself** (first time only):
-   `sqlite3 data/playground.db "UPDATE users SET is_admin=1 WHERE email='mock@example.com';"`
-   then reload — the Administration link appears.
-3. **Mail**: in `/admin/mail`, set SMTP host `mail-mock`, port `1025`, from
-   `playground@localhost`; for `MailApp.read` set IMAP host `mail-mock`,
-   port `1143` and **uncheck "Use TLS for IMAP"** (the mock speaks plain
-   IMAP on the compose network); enable. Run a workflow with
-   `MailApp.sendEmail` / `MailApp.read` and read the inbox at
-   http://localhost:8025.
-4. **Logger**: in `/admin/logger`, set the push URL to `http://loki-mock:3100`
-   and enable; `Logger.log` entries appear at http://localhost:3100 (and in
-   the admin Logger → Logs page, which queries the same store).
+   (add/remove) at http://localhost:9400. The administration area at
+   https://localhost/admin is gated on the `ADMIN_EMAILS` allowlist (seeded
+   on first boot only; manage it under /admin/administrators afterwards).
+2. **Mail**: in `/admin/mail`, set SMTP host `mailer`, port `25`, from
+   `playground@example.com`, and enable. This is the bundled send-only
+   Postfix relay: test sends are REAL mail from this machine, and
+   residential ISPs commonly block outbound :25 — deferrals are visible in
+   `docker compose logs mailer`. Use a throwaway recipient. `MailApp.read`
+   has no local backend (the relay is send-only); it needs an
+   admin-configured external IMAP server.
+3. **Logger**: in `/admin/logger`, set the push URL to `http://loki-mock:3100`
+   and enable; `Logger.log` entries appear at http://localhost:3100. The
+   admin Logger → Logs page does NOT read Loki — it tails the app's own
+   log file (`data/logs/logger.log`), the operational record of every dispatched
+   call.
 
 To sign in as a *specific* user in scripted flows, append identity params to
 the `/auth` URL — they bypass the picker and auto-approve:
@@ -66,7 +74,7 @@ issuer/URL equality, so this is the one string that works everywhere.
 Each mock is `go run .` with env overrides:
 
 ```sh
-cd oidc-mock && ISSUER=http://127.0.0.1:9400 go run .   # or mail-mock / loki-mock
+cd oidc-mock && ISSUER=http://127.0.0.1:9400 go run .
 ```
 
 Then run the server against them (`OIDC_ISSUER=http://127.0.0.1:9400`) and

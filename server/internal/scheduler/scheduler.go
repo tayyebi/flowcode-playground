@@ -135,7 +135,7 @@ func (sch *Scheduler) recordAppCalls(ctx context.Context, execID int64, userID *
 		switch c.Name {
 		case "MailApp.sendEmail", "MailApp.read", "UrlFetchApp.fetch":
 		default:
-			continue // logger lives in Loki only
+			continue // Logger.log user entries live in Loki only (their operational line still reaches data/logs/logger.log via the apps service)
 		}
 		app := "http"
 		if c.Name == "MailApp.sendEmail" || c.Name == "MailApp.read" {

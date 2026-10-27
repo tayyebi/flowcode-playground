@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tayyebi/flowcode-playground/server/internal/applogs"
 	"github.com/tayyebi/flowcode-playground/server/internal/settings"
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
@@ -133,29 +134,13 @@ func (s *Server) handleAdminMailSave(w http.ResponseWriter, r *http.Request) {
 	m := old
 
 	m.Enabled = r.FormValue("enabled") == "on"
-	m.SMTPHost = strings.TrimSpace(r.FormValue("smtpHost"))
-	m.SMTPPort = formInt(r, "smtpPort", old.SMTPPort)
-	m.SMTPUsername = strings.TrimSpace(r.FormValue("smtpUsername"))
-	m.SMTPFrom = strings.TrimSpace(r.FormValue("smtpFrom"))
-	if v := r.FormValue("smtpPassword"); v != "" {
-		m.SMTPPassword = v
-	}
-	m.IMAPHost = strings.TrimSpace(r.FormValue("imapHost"))
-	m.IMAPPort = formInt(r, "imapPort", old.IMAPPort)
-	// TLS is the checkbox semantics inverted by hand: unchecked means the
-	// admin wants plaintext IMAP (the local rig); absent field on an old
-	// saved group keeps the true default until the form is saved.
-	m.IMAPTLS = r.FormValue("imapTLS") == "on"
-	m.IMAPUsername = strings.TrimSpace(r.FormValue("imapUsername"))
-	if v := r.FormValue("imapPassword"); v != "" {
-		m.IMAPPassword = v
-	}
+	m.From = strings.TrimSpace(r.FormValue("from"))
 
 	s.saveGroup(w, r, settings.KeyMail, m, "/admin/mail", "mail settings saved")
 }
 
 func (s *Server) handleAdminMailLogsPage(w http.ResponseWriter, r *http.Request) {
-	s.renderAppCallsPage(w, r, "mail", "Mail app logs")
+	s.renderAppLogPage(w, r, "mail", "Mail app logs")
 }
 
 /* ------------------------------------------------------------------ */
@@ -183,23 +168,20 @@ func (s *Server) handleAdminHTTPSave(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminHTTPLogsPage(w http.ResponseWriter, r *http.Request) {
-	s.renderAppCallsPage(w, r, "http", "HTTP app logs")
+	s.renderAppLogPage(w, r, "http", "HTTP app logs")
 }
 
-func (s *Server) renderAppCallsPage(w http.ResponseWriter, r *http.Request, app, title string) {
-	calls, err := s.store.ListAppCalls(r.Context(), store.AppCallFilter{App: app, Limit: 100})
-	if err != nil {
-		calls = []*store.AppCall{}
-	}
-	s.renderPage(w, http.StatusOK, "appcalls.gohtml", struct {
+func (s *Server) renderAppLogPage(w http.ResponseWriter, r *http.Request, app, title string) {
+	s.renderPage(w, http.StatusOK, "applogs.gohtml", struct {
 		adminPage
-		App   string
-		Calls []*store.AppCall
-	}{s.adminBase(r, title, app), app, calls})
+		App        string
+		Entries    []applogs.Entry
+		UserFilter string
+	}{s.adminBase(r, title, app), app, tailAppLog(app, r.URL.Query().Get("user")), r.URL.Query().Get("user")})
 }
 
 /* ------------------------------------------------------------------ */
-/* Logger app: Configuration / Logs (Loki)                             */
+/* Logger app: Configuration / Logs (the app's own log file)           */
 /* ------------------------------------------------------------------ */
 
 func (s *Server) handleAdminLoggerPage(w http.ResponseWriter, r *http.Request) {
@@ -215,24 +197,12 @@ func (s *Server) handleAdminLoggerSave(w http.ResponseWriter, r *http.Request) {
 	l := old
 
 	l.Enabled = r.FormValue("enabled") == "on"
-	l.PushURL = strings.TrimSpace(r.FormValue("pushUrl"))
-	l.Username = strings.TrimSpace(r.FormValue("username"))
-	if v := r.FormValue("password"); v != "" {
-		l.Password = v
-	}
-	l.Tenant = strings.TrimSpace(r.FormValue("tenant"))
-	l.TimeoutSeconds = formInt(r, "timeoutSeconds", old.TimeoutSeconds)
 
 	s.saveGroup(w, r, settings.KeyLogger, l, "/admin/logger", "logger settings saved")
 }
 
 func (s *Server) handleAdminLoggerLogsPage(w http.ResponseWriter, r *http.Request) {
-	lines, errMsg := s.queryLokiLines(r)
-	s.renderPage(w, http.StatusOK, "lokilogs.gohtml", struct {
-		adminPage
-		Lines []lokiLine
-		Error string
-	}{s.adminBase(r, "Logger app logs", "logger"), lines, errMsg})
+	s.renderAppLogPage(w, r, "logger", "Logger app logs")
 }
 
 /* ------------------------------------------------------------------ */

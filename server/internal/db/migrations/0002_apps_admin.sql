@@ -2,9 +2,12 @@
 -- group), per-app call records, per-user per-app rate-limit overrides, and
 -- the separate `administrators` allowlist for the administration area.
 --
--- Logger-app entries are deliberately NOT stored here: Logger.log ships to
--- the admin-configured Loki instance and lives only there (plus the run's
--- in-memory result). app_calls holds Mail/HTTP call records.
+-- The mail and logger backends are hard-wired compose services (the send-only
+-- `mailer` relay and `loki`), so their settings groups carry only the enable
+-- toggle (plus the sender address for mail). Logger-app entries are
+-- deliberately NOT stored here: Logger.log ships to the bundled Loki and
+-- lives only there (plus the run's in-memory result). app_calls holds
+-- Mail/HTTP call records.
 
 CREATE TABLE system_settings (
   key        TEXT PRIMARY KEY,
@@ -21,9 +24,9 @@ CREATE TABLE system_settings (
 -- cannot be seeded from SQL — they are random per install and generated at
 -- binary boot via settings.Manager.EnsureInternal.
 INSERT INTO system_settings (key, value) VALUES
-  ('mail', '{"enabled":false,"smtpHost":"","smtpPort":587,"smtpUsername":"","smtpFrom":"","imapHost":"","imapPort":993,"imapTLS":true,"imapUsername":""}'),
+  ('mail', '{"enabled":false,"from":""}'),
   ('http', '{"enabled":true,"allowedDomains":[],"timeoutSeconds":10,"responseCapBytes":65536}'),
-  ('logger', '{"enabled":false,"pushUrl":"","username":"","tenant":"","timeoutSeconds":5}'),
+  ('logger', '{"enabled":false}'),
   ('quotas', '{"mailPerMinute":10,"httpPerMinute":30,"loggerPerMinute":60}'),
   ('run', '{"timeoutSeconds":5,"maxConcurrent":4,"ratePerMinute":30,"rateBurst":10,"deployRatePerMinute":60,"deployRateBurst":20,"outputCapBytes":65536}')
 ON CONFLICT (key) DO NOTHING;

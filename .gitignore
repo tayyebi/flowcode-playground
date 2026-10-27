@@ -10,13 +10,13 @@ server/admin
 # compiled binaries live here on the host, deliberately, across deploys.
 /.buildcache/
 
-# TLS certificates for the nginx proxy: a self-signed pair is generated on
-# first boot; replace the two files with real ones and restart. Persistent
-# between runs on purpose — do not commit.
-/certs/*.pem
-
-# Legacy SQLite database from before the PostgreSQL migration. No longer
-# read by anything, but kept locally (it holds user content), never committed.
+# data/ — the host-side runtime data docker mounts, never committed: the
+# PostgreSQL files (data/postgres), TLS certificates (data/certs), per-app
+# operational logs (data/logs), Loki's store (data/loki), and the legacy
+# SQLite database from before the PostgreSQL migration
+# (data/playground.db — kept locally, it holds user content). The mail
+# relay's spool is the one exception — a named volume, because Postfix
+# enforces spool ownership that bind mounts cannot carry.
 /data/
 
 # Local environment overrides

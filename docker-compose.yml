@@ -1,6 +1,6 @@
 # FlowCode Playground — no Dockerfile, no prebuilt image, no CI.
 #
-# Four services behind one TLS reverse proxy:
+# Six services behind one TLS reverse proxy:
 #
 #   nginx        the only published ports (443 TLS + 80→301). Terminates
 #                TLS (self-signed cert generated on first boot into the
@@ -9,14 +9,22 @@
 #                binaries serve no static files), and routes /admin to the
 #                admin service, everything else to the playground.
 #   playground   the user-facing Go service (:8033, unpublished). Builds
-#                from source on every `up` via scripts/docker-entrypoint.sh
-#                "app" — FlowCode toolchain included.
+#                from source on every `up` via
+#                containers/playground/docker-entrypoint.sh "app" — FlowCode
+#                toolchain included.
 #   admin        the administration area (:8034, unpublished): its own OIDC
 #                client and login, gated on the administrators table. Builds
 #                via the same entrypoint with role "admin".
 #   postgres     the shared database (:5432, NEVER published, passwordless
 #                trust auth — safe only because it is unreachable from
 #                outside the compose network).
+#   mailer       a private send-only Postfix relay (port 25 NEVER published,
+#                no auth, no mailboxes, direct-to-MX): the Mail app's bundled
+#                external backend. MAIL_NAME must match the host's PTR record
+#                and the domain's SPF, or big providers will reject the mail.
+#   loki         the Logger app's bundled Loki (port 3100 NEVER published, no
+#                auth): the Logger app is hard-wired to it, pushes to it,
+#                and the platform never reads it back.
 #
 # The whole repo is bind-mounted at /src, so every cache (apk, FlowCode's
 # git clone, Go's module/build cache) and every build artifact lives on the
@@ -33,11 +41,12 @@
 #   FLOWCODE_REF=v0.1.0 docker compose up -d
 #
 # Authentication is OIDC for both areas, with two SEPARATE clients at the
-# same (or different) provider. The OIDC variables are the only application
-# configuration in the environment; everything else — SMTP/IMAP credentials,
-# the Loki push URL, quotas, run limits — is managed by administrators in
-# the admin area at /admin and stored in PostgreSQL. Bootstrap the admin
-# allowlist on first boot:
+# same (or different) provider. The OIDC variables and the mailer's
+# MAIL_NAME are the only application configuration in the environment;
+# everything else — SMTP/IMAP credentials (when pointing the Mail app at an
+# external server instead of the bundled mailer), the Loki push URL, quotas,
+# run limits — is managed by administrators in the admin area at /admin and
+# stored in PostgreSQL. Bootstrap the admin allowlist on first boot:
 #
 #   ADMIN_EMAILS=you@example.com docker compose up -d
 #
@@ -61,7 +70,8 @@ services:
       # containers on this private compose network can reach it.
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # Data files live on the host under the git-ignored data/ directory.
+      - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U playground -d playground"]
       interval: 5s
@@ -73,12 +83,89 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  mailer:
+    image: alpine:3.22
+    container_name: flowcode-mailer
+    restart: unless-stopped
+    command: ["sh", "/mailer-entrypoint.sh"]
+
+    # The Mail app's bundled external backend — a send-only Postfix relay,
+    # as Loki is the Logger app's. Port 25 is NEVER published: only
+    # containers on this private compose network can hand it mail, and it
+    # asks no credentials from them (postgres is the model). It delivers
+    # straight to recipient MX servers — no smarthost, no credentials
+    # anywhere.
+    environment:
+      # The sending hostname: must match the host's PTR record and the
+      # domain's SPF, or big providers will reject/spam-bin the mail.
+      MAIL_NAME: "${MAIL_NAME:?set MAIL_NAME, e.g. mail.example.com}"
+      # Who may hand the relay mail. Defaults to loopback + all RFC1918
+      # ranges (compose networks live there); the unpublished port is the
+      # real boundary.
+      MYNETWORKS: "${MYNETWORKS:-127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16}"
+
+    volumes:
+      - ./containers/mailer/mailer-entrypoint.sh:/mailer-entrypoint.sh:ro
+      - ./containers/mailer/main.cf:/mailer-main.cf:ro
+      # Postfix is installed at boot, like nginx's openssl; the cache mount
+      # keeps that fast.
+      - ./.buildcache/apk-cache:/etc/apk/cache
+      # The outbound queue — survives restarts so deferred mail retries.
+      # A named volume, not a data/ bind mount: Postfix enforces spool
+      # uid/gid ownership, which host bind mounts cannot carry.
+      - mailer-spool:/var/spool/postfix
+
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 25"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: flowcode-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yml"]
+    # Run as root: data/loki is a host bind mount, root-owned on Linux
+    # hosts — the container is the security boundary, like the mailer.
+
+    # The Logger app's bundled external backend, as the mailer is the Mail
+    # app's. No authentication, and port 3100 is NEVER published — the docker
+    # network is the only way in (postgres is the model). The Logger app is
+    # hard-wired to http://loki:3100; the platform pushes to it and never
+    # reads it back.
+    user: "0"
+    volumes:
+      - ./containers/loki/loki-config.yml:/etc/loki/config.yml:ro
+      # Chunks, index, WAL — survives restarts; 14-day retention.
+      - ./data/loki:/loki
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   playground:
     image: golang:1.26-alpine
     container_name: flowcode-playground
     restart: unless-stopped
     working_dir: /src
-    command: ["sh", "/src/scripts/docker-entrypoint.sh", "app"]
+    command: ["sh", "/src/containers/playground/docker-entrypoint.sh", "app"]
 
     # Nothing is published — nginx is the only entry point. The internal
     # listener on :8035 (admin→app reload pokes) is likewise compose-only.
@@ -133,7 +220,9 @@ services:
     container_name: flowcode-admin
     restart: unless-stopped
     working_dir: /src
-    command: ["sh", "/src/scripts/docker-entrypoint.sh", "admin"]
+    # Shares the playground container directory's entrypoint — the role
+    # argument selects which binary it builds and runs.
+    command: ["sh", "/src/containers/playground/docker-entrypoint.sh", "admin"]
 
     environment:
       PORT: "8034"
@@ -201,12 +290,12 @@ services:
       CERT_IP: "${CERT_IP:-}"
 
     volumes:
-      - ./conf/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./scripts/nginx-entrypoint.sh:/nginx-entrypoint.sh:ro
+      - ./containers/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./containers/nginx/nginx-entrypoint.sh:/nginx-entrypoint.sh:ro
       # The single source of truth for UI assets — served by nginx alone.
       - ./static:/srv/static:ro
-      # TLS certificates: git-ignored, persistent, replaceable.
-      - ./certs:/certs
+      # TLS certificates: git-ignored under data/, persistent, replaceable.
+      - ./data/certs:/certs
 
     depends_on:
       - playground
@@ -226,4 +315,4 @@ services:
         max-file: "3"
 
 volumes:
-  postgres-data:
+  mailer-spool:

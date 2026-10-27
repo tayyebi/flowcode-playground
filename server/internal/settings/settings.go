@@ -16,21 +16,13 @@ import (
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
 
-// Mail covers MailApp.sendEmail (SMTP) and MailApp.read (IMAP). Passwords are
-// write-only from the admin UI's point of view; the service reads the real
-// values from here.
+// Mail covers MailApp.sendEmail. The backend is hard-wired: the bundled
+// send-only relay on the compose network (host `mailer`, port 25, no
+// credentials — see internal/apps). Only the toggle and the sender address
+// are admin-managed. MailApp.read is not supported (send-only relay).
 type Mail struct {
-	Enabled      bool   `json:"enabled"`
-	SMTPHost     string `json:"smtpHost"`
-	SMTPPort     int    `json:"smtpPort"`
-	SMTPUsername string `json:"smtpUsername"`
-	SMTPPassword string `json:"smtpPassword,omitempty"`
-	SMTPFrom     string `json:"smtpFrom"`
-	IMAPHost     string `json:"imapHost"`
-	IMAPPort     int    `json:"imapPort"`
-	IMAPTLS      bool   `json:"imapTLS"`
-	IMAPUsername string `json:"imapUsername"`
-	IMAPPassword string `json:"imapPassword,omitempty"`
+	Enabled bool   `json:"enabled"`
+	From    string `json:"from"`
 }
 
 // HTTP covers UrlFetchApp.fetch.
@@ -41,16 +33,13 @@ type HTTP struct {
 	ResponseCapBytes int      `json:"responseCapBytes"`
 }
 
-// Logger covers Logger.log. Entries are pushed to Loki; nothing is stored
-// locally. Enabled=false or an empty PushURL is a hard error for Logger.log
-// (strict mode).
+// Logger covers Logger.log. The backend is hard-wired: the bundled Loki
+// service on the compose network (http://loki:3100, no authentication —
+// protected by the docker network; see internal/apps). Entries are pushed
+// to Loki and never stored locally. Enabled=false is a hard error for
+// Logger.log (strict mode).
 type Logger struct {
-	Enabled        bool   `json:"enabled"`
-	PushURL        string `json:"pushUrl"`
-	Username       string `json:"username"`
-	Password       string `json:"password,omitempty"`
-	Tenant         string `json:"tenant"`
-	TimeoutSeconds int    `json:"timeoutSeconds"`
+	Enabled bool `json:"enabled"`
 }
 
 // Quotas holds the default per-user rate limits, overridable per user via
@@ -83,13 +72,9 @@ type Snapshot struct {
 
 func defaults() Snapshot {
 	return Snapshot{
-		Mail: Mail{Enabled: false, SMTPPort: 587, IMAPPort: 993, IMAPTLS: true},
-		HTTP: HTTP{Enabled: true, TimeoutSeconds: 10, ResponseCapBytes: 64 * 1024},
-		Logger: Logger{
-			Enabled:        false,
-			PushURL:        "", // e.g. http://loki:3100 — strict: Logger.log errors until set
-			TimeoutSeconds: 5,
-		},
+		Mail:   Mail{Enabled: false},
+		HTTP:   HTTP{Enabled: true, TimeoutSeconds: 10, ResponseCapBytes: 64 * 1024},
+		Logger: Logger{Enabled: false},
 		Quotas: Quotas{MailPerMinute: 10, HTTPPerMinute: 30, LoggerPerMinute: 60},
 		Run: Run{
 			TimeoutSeconds:      5,

@@ -1,7 +1,7 @@
 # Throw-away local test rig. Compose merges this file automatically on plain
 # `docker compose up` when it is present; without it, nothing changes.
 #
-# Three self-built mocks (throw-away/), each with a web GUI and a single
+# One self-built mock remains (throw-away/), with a web GUI and a single
 # JSON file as its database (under throw-away/data/):
 #
 #   oidc-mock      a complete mock OIDC provider — full code flow with real
@@ -9,12 +9,14 @@
 #                  (identity picker on login, identity manager, login log).
 #                  It accepts any client_id/secret, so the admin area's
 #                  second client needs no extra registration.
-#   mail-mock      an SMTP sink with an inbox GUI at http://localhost:8025;
-#                  accept SMTP internally on :1025 (configure the Mail app
-#                  with host `mail-mock`, port 1025)
-#   loki-mock      a Loki stand-in: accepts Logger.log pushes and serves
-#                  query_range, GUI at http://localhost:3100 (configure the
-#                  Logger app with push URL `http://loki-mock:3100`)
+#
+# Everything else that used to be mocked is now real and bundled in the base
+# file: mail goes out through the send-only `mailer` relay (configure the
+# Mail app with just the toggle + sender address; test sends are REAL mail
+# from this machine, and residential ISPs commonly block outbound :25 —
+# deferrals are visible in `docker compose logs mailer`), and Logger.log
+# pushes to the bundled no-auth `loki` service (configure the Logger app
+# with just the toggle).
 #
 #   oidc-localhost-bridge / admin-oidc-localhost-bridge
 #                  the issuer is http://localhost:9400, which the browser
@@ -35,6 +37,7 @@
 #   OIDC_ADMIN_CLIENT_ID=playground-admin
 #   OIDC_ADMIN_CLIENT_SECRET=mock-secret
 #   ADMIN_EMAILS=admin@example.com
+#   MAIL_NAME=mail.localhost
 #   # ports 80/443 are the defaults; remap if your machine has them taken:
 #   # HTTPS_PORT=8443
 #   # HTTP_PORT=8080
@@ -68,7 +71,6 @@ services:
       OIDC_CLIENT_ID: "playground"
       OIDC_CLIENT_SECRET: "mock-secret"
       OIDC_REDIRECT_URL: "https://localhost/api/auth/callback"
-      LOKI_URL: "http://loki-mock:3100"
 
   admin:
     depends_on:
@@ -125,23 +127,3 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
-
-  mail-mock:
-    <<: *mock-base
-    container_name: flowcode-mail-mock
-    working_dir: /src/throw-away/mail-mock
-    command: ["sh", "-c", "exec go run ."]
-    environment:
-      DB: "/data/mail-mock.json"
-    ports:
-      - "8025:8025" # inbox GUI; SMTP stays internal on :1025 as mail-mock:1025
-
-  loki-mock:
-    <<: *mock-base
-    container_name: flowcode-loki-mock
-    working_dir: /src/throw-away/loki-mock
-    command: ["sh", "-c", "exec go run ."]
-    environment:
-      DB: "/data/loki-mock.json"
-    ports:
-      - "3100:3100" # GUI + push API; the playground pushes to loki-mock:3100

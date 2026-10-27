@@ -15,8 +15,10 @@ request arrives. Playground ⇄ core communicate only over the run pipeline
 │          /projects/{id} (editor + Run + versions/deployments/triggers/KV) ·         │
 │          /projects/{id}/executions/{execId} (trace + bytecode + APP CALLS)          │
 │  admin:  /admin/** — sidebar: [Mail: Config·Logs·RateLimits]                        │
-│                          [HTTP: Config·Logs·RateLimits] [Logger: Config·Logs]       │
-│                          [System: Users·Executions·General]                         │
+│                          [HTTP: Config·Logs·RateLimits]                              │
+│                          [Logger: Config·Logs·RateLimits]                            │
+│                          [System: Users·Executions·Administrators·General]           │
+│         (Logs pages tail each app's OWN log file, data/logs/<app>.log — never Loki)       │
 └──────────────┬──────────────────────────────────────────────┬───────────────────────┘
                │ ① HTML pages + form POSTs                    │ ⑥ admin forms
                │                                              │
@@ -48,20 +50,27 @@ request arrives. Playground ⇄ core communicate only over the run pipeline
                             │        │                     ▼  (length-prefixed JSON:   │
                             │  APPS SERVICE (internal/apps)     name+params+token)     │
                             │  quota check (user,app) → execute → app_calls row        │
-                            │                                    (mail/http only)       │
-                            │   ├─ MailApp.sendEmail ── net/smtp ──────────► SMTP      │
-                            │   ├─ MailApp.read ─────── go-imap ────────► IMAP         │
+                            │                     (mail/http only) + one line in       │
+                            │                     data/logs/<app>.log (every call, all      │
+                            │                     apps — the admin Logs pages tail it) │
+                            │   ├─ MailApp.sendEmail ─ net/smtp ─► mailer (bundled     │
+                            │   │     send-only Postfix relay, :25 unpublished, no     │
+                            │   │     auth, direct-to-MX) or external SMTP             │
+                            │   ├─ MailApp.read ── NOT SUPPORTED (send-only relay):    │
+                            │   │     strict error, run halts                          │
                             │   ├─ UrlFetchApp.fetch ─ net/http ────► any HTTP         │
-                            │   └─ Logger.log ──── Loki push API ──► LOKI              │
-                            │       (labels: app·user·project·exec; strict: halts     │
-                            │       on unconfigured/unreachable; docker-compose.       │
-                            │       override.yml service, http://loki:3100)            │
+                            │   └─ Logger.log ── Loki push API ──► LOKI (bundled,    │
+                            │       hard-wired http://loki:3100, no auth, :3100       │
+                            │       unpublished; labels app·user·project·exec; strict │
+                            │       halts on unreachable; Loki = the Logger app's     │
+                            │       external backend — pushed to, NEVER read by the   │
+                            │       platform; platform logs live on stdout)           │
                             │  SETTINGS SERVICE (cached system_settings,              │
                             │  reloaded on admin save: SMTP/IMAP creds, allowlist,    │
                             │  app toggles, quotas, run limits)                        │
                             │         ▲                                               │
                             │         ▼                                               │
-                            │  STORE ── SQLite (modernc, WAL)                          │
+                            │  STORE ── PostgreSQL (compose network, trust auth)     │
                             │  users(+is_admin) · workspaces · workspace_members ·     │
                             │  project_shares · ws_projects/files/versions/deploy-     │
                             │  ments/triggers/executions(actor_id)/kv ·                │

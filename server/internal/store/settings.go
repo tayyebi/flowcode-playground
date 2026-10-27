@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strconv"
 )
 
 /* ------------------------------------------------------------------ */
@@ -92,54 +91,6 @@ func (s *Store) RecordAppCalls(ctx context.Context, calls []*AppCall) error {
 		}
 	}
 	return nil
-}
-
-// AppCallFilter narrows the admin Logs pages.
-type AppCallFilter struct {
-	App    string // "" = all
-	UserID int64  // 0 = all
-	Limit  int
-}
-
-func (s *Store) ListAppCalls(ctx context.Context, f AppCallFilter) ([]*AppCall, error) {
-	q := `SELECT c.id, c.execution_id, c.user_id, c.app, c.name, c.status, c.request, c.response, c.duration_ms, c.created_at
-	      FROM app_calls c`
-	where, args := "", []any{}
-	if f.App != "" {
-		where += " WHERE c.app = $" + strconv.Itoa(len(args)+1)
-		args = append(args, f.App)
-	}
-	if f.UserID != 0 {
-		if where == "" {
-			where = " WHERE"
-		} else {
-			where += " AND"
-		}
-		where += " c.user_id = $" + strconv.Itoa(len(args)+1)
-		args = append(args, f.UserID)
-	}
-	limit := f.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	q += where + ` ORDER BY c.id DESC LIMIT $` + strconv.Itoa(len(args)+1)
-	args = append(args, limit)
-
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list app calls: %w", err)
-	}
-	defer rows.Close()
-
-	out := []*AppCall{}
-	for rows.Next() {
-		c := &AppCall{}
-		if err := rows.Scan(&c.ID, &c.ExecutionID, &c.UserID, &c.App, &c.Name, &c.Status, &c.Request, &c.Response, &c.DurationMs, &c.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
 }
 
 // ListExecutionAppCalls returns the transcript rows for one execution.

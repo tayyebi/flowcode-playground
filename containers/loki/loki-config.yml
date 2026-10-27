@@ -1,0 +1,43 @@
+# Single-process Loki for Logger.log entries. No authentication
+# (auth_enabled: false): port 3100 is NEVER published — the docker network is
+# the only way in, the same trust model as PostgreSQL and the mailer relay.
+# The Logger app is hard-wired to http://loki:3100 (see internal/apps).
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true # delete expired chunks (limits_config.retention_period)
+  delete_request_store: filesystem
+
+limits_config:
+  retention_period: 336h # 14 days

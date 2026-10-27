@@ -51,10 +51,11 @@ flowchart TB
         bridge["unix-socket bridge<br/>lives exactly one run"]
     end
 
-    smtp[("SMTP server")]
+    mailer[("mailer — bundled send-only<br/>Postfix relay (or external SMTP)")]
     imap[("IMAP server")]
-    loki[("Loki")]
+    loki[("loki — bundled Loki<br/>no auth · :3100 unpublished")]
     http[("HTTP targets<br/>allowlisted")]
+    applog[("logs/&lt;app&gt;.log<br/>per-app operational record")]
 
     user --> nginx
     adminuser --> nginx
@@ -76,24 +77,42 @@ flowchart TB
     bridge --> apps
     engine -->|"trace → executions · KV"| pg
     apps -->|"mail + http transcripts"| pg
-    apps -->|"MailApp.sendEmail"| smtp
+    apps -->|"one line per call"| applog
+    aui -->|"Logs pages tail"| applog
+    apps -->|"MailApp.sendEmail"| mailer
     apps -->|"MailApp.read"| imap
     apps -->|"Logger.log — Loki only, no local rows"| loki
     apps -->|"UrlFetchApp.fetch"| http
 ```
 
 Every third party is an integration, never a hosted feature: login (OIDC),
-mail (SMTP/IMAP), logs (Loki), outbound HTTP (allowlist). Four services
-share one private compose network: **nginx** (the only published ports, TLS
-terminator, serves `/static/` straight from the repo so the Go binaries ship
-no static files), the **playground** (user area), **admin** (the
-administration area — its own OIDC client and login, its own
-`administrators` table; platform admins have no user-side powers), and
-**PostgreSQL** (passwordless trust auth, port never published). The
-playground owns every runtime socket — HTTP for users, the public deploy
-URLs as the webhook listener, a per-run unix bridge for app calls; the core
-is pure compute with zero side effects. The detailed, numbered-flow version
-lives in [`docs/architecture.md`](docs/architecture.md).
+mail (the bundled send-only relay), logs (the bundled Loki), outbound HTTP
+(allowlist). Six services share one private compose network:
+**nginx** (the only published ports, TLS terminator, serves `/static/`
+straight from the repo so the Go binaries ship no static files), the
+**playground** (user area), **admin** (the administration area — its own
+OIDC client and login, its own `administrators` table; platform admins have
+no user-side powers), **PostgreSQL** (passwordless trust auth, port never
+published), the **mailer** (a private send-only Postfix relay — the Mail
+app's bundled external backend; port 25 never published, no credentials in
+or out), and **loki** (the Logger app's bundled backend — no authentication,
+port 3100 never published; the app is hard-wired to it). The playground owns every runtime
+socket — HTTP for users, the public deploy URLs as the webhook listener, a
+per-run unix bridge for app calls; the core is pure compute with zero side
+effects. The detailed, numbered-flow version lives in
+[`docs/architecture.md`](docs/architecture.md).
+
+### Logging: three destinations, three owners
+
+- **Platform services log to their own stdout/stderr** (`docker compose
+  logs`), never to Loki and never to the app files.
+- **Each app keeps its own operational log file** — `data/logs/mail.log`,
+  `data/logs/http.log`, `data/logs/logger.log`, one JSON line per dispatched bridge
+  call (successes, failures, quota rejections alike). The administration
+  area's Logs pages tail these files. Logger entries carry the outcome and
+  labels only; a user's log line never lands in a platform file.
+- **User `Logger.log` entries go to Loki only** — Loki is the Logger app's
+  external backend and is never read by the platform.
 
 ## The user journey (the Apps Script mapping)
 
@@ -104,7 +123,7 @@ lives in [`docs/architecture.md`](docs/architecture.md).
 | Editor + Run + execution log | project page: editor, Run, Trace / Bytecode / Diagnostics / **App calls** |
 | `MailApp.sendEmail()` | `MailApp.sendEmail` (SMTP, admin-configured) |
 | `UrlFetchApp.fetch()` | `UrlFetchApp.fetch` (HTTP, admin-configured allowlist) |
-| `Logger.log()` | `Logger.log` (pushed to Loki, admin-configured) |
+| `Logger.log()` | `Logger.log` (pushed to the bundled Loki) |
 | Web-app deployment / webhooks | public `/deploy/{slug}` URLs — **the playground listens, the core never does** |
 | Time-driven triggers | interval / daily-at-UTC triggers per project file |
 | Admin console | `/admin` — a separate service and login: per-app Configuration, Logs, Rate limits, Users, Executions, Administrators, General |
@@ -136,16 +155,19 @@ step logged:
 end
 ```
 
-- **MailApp.sendEmail** — SMTP delivery through the account the
-  administrators configured (`/admin/mail`). Params `to`/`subject`/`body`
-  are optional with the current token as fallback.
-- **MailApp.read** — IMAP inbox read (`folder`, `limit`); the token becomes
-  a JSON array of `{from, subject, date, snippet}`.
+- **MailApp.sendEmail** — hands the message to the bundled private
+  send-only relay (hard-wired `mailer:25`, no credentials; only the toggle
+  and the sender address are admin-configured in `/admin/mail`). Params
+  `to`/`subject`/`body` are optional with the current token as fallback.
+- **MailApp.read** — not supported: the bundled relay is send-only, and the
+  call fails loudly (strict semantics).
 - **UrlFetchApp.fetch** — outbound HTTP (`url`, `method`, `body`; every
   other param is a request header). The response body becomes the token,
   capped by the admin-configured size limit.
-- **Logger.log** — one log entry pushed to Loki. Nothing is stored locally:
-  the fresh-run transcript is in-memory, history lives in Loki.
+- **Logger.log** — one log entry pushed to the bundled Loki (hard-wired
+  `http://loki:3100`, no authentication). Nothing is stored locally: the
+  fresh-run transcript is in-memory, history lives in Loki; only the push's
+  outcome (not the message) reaches the app's own operational log.
 
 All four are **strict**: a disabled app, missing credentials, an exhausted
 per-user rate limit, or an unreachable backend halts the workflow with a
@@ -156,9 +178,10 @@ that fails loudly.
 
 The **only application configuration in the environment** is the OIDC
 credentials (two clients: one for users, one for the administration area) —
-the servers need them before they can authenticate anything. Everything else
-lives in PostgreSQL (`system_settings`, seeded with defaults by the
-migrations) and is managed by administrators in the `/admin` area.
+the servers need them before they can authenticate anything — plus the
+mailer's sending hostname. Everything else lives in PostgreSQL
+(`system_settings`, seeded with defaults by the migrations) and is managed
+by administrators in the `/admin` area.
 
 | Env var | Purpose |
 |---|---|
@@ -167,19 +190,22 @@ migrations) and is managed by administrators in the `/admin` area.
 | `OIDC_REDIRECT_URL` | Defaults to `https://<request-host>/api/auth/callback` |
 | `OIDC_ADMIN_CLIENT_ID` / `OIDC_ADMIN_CLIENT_SECRET` | The administration area's **separate** OAuth2 client — **required** |
 | `OIDC_ADMIN_REDIRECT_URL` | Defaults to `https://<request-host>/admin/api/auth/callback` |
+| `MAIL_NAME` | The bundled mailer's sending hostname — **required**; must match the host's PTR record and the domain's SPF |
+| `MYNETWORKS` | Who may hand the bundled mailer mail (default: loopback + RFC1918) |
 | `ADMIN_EMAILS` | Comma-separated allowlist seeded into `administrators` on the admin service's first boot (only while the table is empty) |
 | `DATABASE_URL` | PostgreSQL DSN — passwordless inside the compose network |
 | `APP_INTERNAL_URL` | The playground's unpublished `/internal` listener (admin → app reload pokes) |
+| `APP_LOG_DIR` | Where the per-app operational log files live (default `data/logs/`) |
 | `PORT`, `PLAYGROUND_WORKDIR`, `FLOWCODE_FCC`, `FLOWCODE_RUNNER` | Boot paths (sane defaults in the container) |
 | `TRUST_PROXY` | `1` when a proxy you control (nginx) fronts the services |
 | `FLOWCODE_REPO` / `FLOWCODE_REF` | Compose build pins |
 | `HTTPS_PORT` / `HTTP_PORT` | Host port mapping for nginx (default 443/80) |
 | `CERT_CN` / `CERT_DNS` / `CERT_IP` | Subject/SANs for the first-boot self-signed certificate |
 
-Admin-managed (`/admin`, stored in PostgreSQL): SMTP/IMAP credentials, the
-Loki push URL (optional basic-auth and tenant), the UrlFetchApp allowlist
-and caps, per-app default and per-user rate limits, app enable toggles, and
-sandbox limits (timeout, concurrency, site rate limits — applied when the
+Admin-managed (`/admin`, stored in PostgreSQL): the mail and logger enable
+toggles (their backends are hard-wired compose services) and the mail sender
+address, the UrlFetchApp allowlist and caps, per-app default and per-user
+rate limits, and sandbox limits (timeout, concurrency, site rate limits — applied when the
 playground restarts). Settings saves are picked up by the playground
 immediately via the internal reload poke (with a once-a-minute fallback
 refresh).
@@ -192,7 +218,7 @@ platform admins sit in different tables, and an admin identity has no
 user-side powers (and vice versa). Bootstrap on first boot:
 
 ```sh
-ADMIN_EMAILS=you@example.com docker compose up -d
+MAIL_NAME=mail.example.com ADMIN_EMAILS=you@example.com docker compose up -d
 ```
 
 Afterwards, manage the allowlist in `/admin/administrators` (add by email;
@@ -204,26 +230,36 @@ rotatable in /admin → General) lets scripts call the JSON API with
 ### TLS certificates
 
 On first boot the nginx entrypoint generates a self-signed certificate into
-`./certs/` (git-ignored, persistent between runs) — expect a browser
-warning. To use a real certificate, overwrite `certs/fullchain.pem` and
-`certs/privkey.pem` and restart the nginx service; nginx loads whatever is
-there. No restart loop, no renewal sidecar: certificate renewal is your
+`data/certs/` (git-ignored, persistent between runs) — expect a browser
+warning. To use a real certificate, overwrite `data/certs/fullchain.pem`
+and `data/certs/privkey.pem` and restart the nginx service; nginx loads
+whatever is there. No restart loop, no renewal sidecar: certificate renewal is your
 (`certbot`/ACME) job.
 
-## Logger → Loki (optional)
+## Mail and Loki (both bundled, both hard-wired)
 
-Logger.log is third-party-backed, like auth (OIDC) and mail (SMTP). Add the
-optional override file and a single-tenant Loki comes up next to the
-playground:
+`MailApp.sendEmail` is backed by the **bundled `mailer` service** — a
+private, no-auth, send-only Postfix relay on the compose network (port 25
+never published; postgres is the model). It delivers straight to recipient
+MX servers: no smarthost, no credentials anywhere. `Logger.log` is backed
+by the **bundled `loki` service** the same way — no authentication, port
+3100 never published, the app hard-wired to it. The docker network is the
+only protection both of them need or have.
 
-```
-docker compose -f docker-compose.override.yml up -d
-```
+For the relay's mail to actually land in inboxes, three things must be true
+on the hosting side (the DNS checklist; DKIM signing is deliberately
+deferred — big providers may spam-bin until it is added):
 
-Then set Logger → push URL to `http://loki-mock:3100` in `/admin/logger`. The
-admin Logs page for the Logger app is a viewer over Loki's query API; the
-`user`/`project`/`exec` labels make entries filterable. Retention is Loki's
-concern (14 days in the bundled config).
+1. outbound port 25 is open on the host (many providers block it by
+   default),
+2. the host's PTR/rDNS record equals `MAIL_NAME`,
+3. the sending domain's SPF TXT record authorizes the host's IP.
+
+Loki keeps Logger.log entries for 14 days
+(`containers/loki/loki-config.yml`). The
+admin Logs pages never read Loki — they tail each app's own log file
+(`data/logs/<app>.log`); user log entries are queryable only through Loki's own
+API.
 
 ## Security model
 
@@ -231,9 +267,10 @@ concern (14 days in the bundled config).
   playground web server owns every socket: HTTP for users, a per-run unix
   socket for app calls, public deploy URLs as the webhook listener.
 - **One published surface.** Only nginx's 443/80 are published. PostgreSQL
-  (passwordless `trust`) and every service-to-service port (:8033, :8034,
-  the internal :8035 reload API) live on the private compose network — the
-  trust auth is safe only because 5432 is unreachable from outside it.
+  (passwordless `trust`), the bundled mailer's port 25 (no auth — safe only
+  because it is unreachable from outside), and every service-to-service
+  port (:8033, :8034, the internal :8035 reload API) live on the private
+  compose network.
 - **Separation of admins from users.** The admin area authenticates against
   its own OIDC client and the `administrators` allowlist; there is no
   admin flag on users, and admins hold no powers over user projects.
@@ -247,8 +284,10 @@ concern (14 days in the bundled config).
   read-only). Foreign project ids return 404, not 403.
 - Public `/deploy/{slug}` traffic is rate-limited and attributed to the
   project's owner for quotas and app-call records.
-- Secrets (SMTP/IMAP/Loki passwords) are write-only from the admin UI's
-  point of view: forms never echo them, an empty field means "keep".
+- No app credentials exist anywhere: the mail and Loki backends are
+  hard-wired compose services protected by the docker network, so the admin
+  UI holds no connection settings to leak (only toggles, the mail sender
+  address, quotas, and limits).
 
 ## Projects, deployments, triggers, and the KV log
 

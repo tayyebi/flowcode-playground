@@ -1,16 +1,19 @@
 // Package apps implements the four GAS-style applications the playground
-// exposes to workflows: MailApp.sendEmail (SMTP), MailApp.read (IMAP),
-// UrlFetchApp.fetch (HTTP), and Logger.log (Loki push).
+// exposes to workflows: MailApp.sendEmail (bundled send-only relay),
+// MailApp.read (unsupported — the relay is send-only), UrlFetchApp.fetch
+// (HTTP), and Logger.log (bundled Loki).
 //
-// All side effects live here, in the Go server — never in the C core. The
-// engine hands each bridge call to Service.Call with the calling user
-// (the actor) so quotas and call records can be attributed.
+// The mail and logger backends are hard-wired through docker compose — the
+// private `mailer` and `loki` services on the compose network, no
+// credentials, exactly as an external Postfix/Loki would be. All side
+// effects live here, in the Go server — never in the C core. The engine
+// hands each bridge call to Service.Call with the calling user (the actor)
+// so quotas and call records can be attributed.
 package apps
 
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,11 +26,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
-
+	"github.com/tayyebi/flowcode-playground/server/internal/applogs"
 	"github.com/tayyebi/flowcode-playground/server/internal/settings"
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
+)
+
+// Hard-wired backends: compose-network services, no credentials, ports
+// never published. The trust boundary is the docker network.
+const (
+	mailerAddr  = "mailer:25"
+	lokiPushURL = "http://loki:3100/loki/api/v1/push"
+	lokiTimeout = 5 * time.Second
 )
 
 // Actor is who a call is executed as: the logged-in user for manual runs,
@@ -55,7 +64,8 @@ type Outcome struct {
 	Status string
 	// App is the app family the call belonged to ("mail", "http", "logger").
 	App string
-	// Record is false for Logger (Loki only, never stored in app_calls).
+	// Record is false for Logger (user entries live in Loki only, never in
+	// app_calls; the call's operational line still reaches data/logs/logger.log).
 	Record bool
 	// Request/Response are capped summaries for the transcript.
 	Request  string
@@ -68,6 +78,10 @@ type Service struct {
 	store    *store.Store
 	http     *http.Client
 
+	// Each app family's own operational log file — one line per dispatched
+	// call, success or failure, surfaced in the admin area's Logs pages.
+	oplogs map[string]*applogs.Logger
+
 	mu      sync.Mutex
 	windows map[string][]time.Time // key: userID|app, sliding 1-minute window
 }
@@ -77,7 +91,12 @@ func New(st *store.Store, mgr *settings.Manager) *Service {
 		settings: mgr,
 		store:    st,
 		http:     &http.Client{},
-		windows:  map[string][]time.Time{},
+		oplogs: map[string]*applogs.Logger{
+			AppMail:   applogs.New(AppMail),
+			AppHTTP:   applogs.New(AppHTTP),
+			AppLogger: applogs.New(AppLogger),
+		},
+		windows: map[string][]time.Time{},
 	}
 }
 
@@ -86,6 +105,7 @@ func New(st *store.Store, mgr *settings.Manager) *Service {
 // semantics, uniformly for all four apps.
 func (s *Service) Call(ctx context.Context, actor Actor, name string, params map[string]string, token []byte) (Outcome, error) {
 	snap := s.settings.Current()
+	start := time.Now()
 
 	var app, status, result, request, response string
 	var err error
@@ -109,15 +129,7 @@ func (s *Service) Call(ctx context.Context, actor Actor, name string, params map
 	case "MailApp.read":
 		app = AppMail
 		record = true
-		if !snap.Mail.Enabled {
-			err = fmt.Errorf("mail app is disabled by the administrator")
-			break
-		}
-		if qerr := s.allowQuota(ctx, actor.UserID, AppMail, snap.Quotas.MailPerMinute); qerr != nil {
-			err = qerr
-			break
-		}
-		result, status, response, err = s.readMail(ctx, snap.Mail, params, token)
+		err = fmt.Errorf("mail app read is not supported — the bundled relay is send-only")
 	case "UrlFetchApp.fetch":
 		app = AppHTTP
 		record = true
@@ -133,24 +145,55 @@ func (s *Service) Call(ctx context.Context, actor Actor, name string, params map
 	case "Logger.log":
 		app = AppLogger
 		record = false
-		if !snap.Logger.Enabled || snap.Logger.PushURL == "" {
-			err = fmt.Errorf("logger app is not configured (no Loki push URL)")
+		if !snap.Logger.Enabled {
+			err = fmt.Errorf("logger app is disabled by the administrator")
 			break
 		}
 		if qerr := s.allowQuota(ctx, actor.UserID, AppLogger, snap.Quotas.LoggerPerMinute); qerr != nil {
 			err = qerr
 			break
 		}
-		status, response, err = s.pushLoki(ctx, snap.Logger, actor, name, params, token)
+		status, response, err = s.pushLoki(ctx, actor, name, params, token)
 	default:
 		err = fmt.Errorf("unknown app call %q", name)
 	}
 
+	var out Outcome
 	if err != nil {
-		return Outcome{App: app, Status: "error: " + err.Error(), Record: record, Request: request},
-			fmt.Errorf("%s: %w", name, err)
+		out = Outcome{App: app, Status: "error: " + err.Error(), Record: record, Request: request}
+	} else {
+		out = Outcome{Result: result, Status: status, App: app, Record: record, Request: request, Response: response}
 	}
-	return Outcome{Result: result, Status: status, App: app, Record: record, Request: request, Response: response}, nil
+	s.oplog(start, actor, name, out)
+	if err != nil {
+		return out, fmt.Errorf("%s: %w", name, err)
+	}
+	return out, nil
+}
+
+// oplog appends the call's operational record to the app family's own log
+// file — including the failures the switch produced before any side effect
+// (disabled, unconfigured, quota-rejected). Logger entries carry the outcome
+// and labels only: the user's log line lives in Loki, exactly as mail bodies
+// live in the mail system, never in the platform's own logs.
+func (s *Service) oplog(start time.Time, actor Actor, name string, out Outcome) {
+	lg, ok := s.oplogs[out.App]
+	if !ok || lg == nil {
+		return // unknown app call — no family, no file
+	}
+	e := applogs.Entry{
+		Name:       name,
+		User:       firstNonEmpty(actor.Email, fmt.Sprintf("uid%d", actor.UserID)),
+		ProjectID:  actor.ProjectID,
+		ExecID:     actor.ExecID,
+		Status:     out.Status,
+		DurationMs: time.Since(start).Milliseconds(),
+	}
+	if out.App != AppLogger {
+		e.Request = out.Request
+		e.Response = out.Response
+	}
+	lg.Append(e)
 }
 
 /* ------------------------------------------------------------------ */
@@ -185,7 +228,7 @@ func (s *Service) allowQuota(ctx context.Context, userID int64, app string, def 
 }
 
 /* ------------------------------------------------------------------ */
-/* MailApp.sendEmail                                                   */
+/* MailApp.sendEmail — via the hard-wired bundled send-only relay      */
 /* ------------------------------------------------------------------ */
 
 func (s *Service) sendEmail(ctx context.Context, cfg settings.Mail, params map[string]string, token []byte) (status, response string, err error) {
@@ -199,72 +242,39 @@ func (s *Service) sendEmail(ctx context.Context, cfg settings.Mail, params map[s
 	if to == "" {
 		return "", "", fmt.Errorf("`to` parameter or a token is required")
 	}
-	if cfg.SMTPHost == "" {
-		return "", "", fmt.Errorf("SMTP is not configured")
-	}
-	from := firstNonEmpty(cfg.SMTPFrom, cfg.SMTPUsername)
+	from := cfg.From
 	if from == "" {
-		return "", "", fmt.Errorf("SMTP sender (from) is not configured")
+		return "", "", fmt.Errorf("sender (from) is not configured — set it in /admin/mail")
 	}
 
 	msg := buildMailMessage(from, to, subject, body)
 
-	addr := fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort)
-	host := cfg.SMTPHost
+	// The bundled relay speaks plain SMTP on the private compose network —
+	// no TLS, no credentials (the docker network is the trust boundary).
+	c, cerr := smtp.Dial(mailerAddr)
+	if cerr != nil {
+		return "", "", fmt.Errorf("relay dial %s: %w", mailerAddr, cerr)
+	}
+	defer c.Close()
 
-	var client *smtp.Client
-	if cfg.SMTPPort == 465 {
-		tlsConn, derr := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
-		if derr != nil {
-			return "", "", fmt.Errorf("SMTP TLS dial: %w", derr)
-		}
-		c, cerr := smtp.NewClient(tlsConn, host)
-		if cerr != nil {
-			return "", "", fmt.Errorf("SMTP client: %w", cerr)
-		}
-		client = c
-	} else {
-		c, cerr := smtp.Dial(addr)
-		if cerr != nil {
-			return "", "", fmt.Errorf("SMTP dial: %w", cerr)
-		}
-		// Opportunistic STARTTLS on submission ports; plain only when the
-		// server offers nothing better.
-		if ok, _ := c.Extension("STARTTLS"); ok {
-			if terr := c.StartTLS(&tls.Config{ServerName: host}); terr != nil {
-				c.Close()
-				return "", "", fmt.Errorf("SMTP STARTTLS: %w", terr)
-			}
-		}
-		client = c
+	if werr := c.Mail(from); werr != nil {
+		return "", "", fmt.Errorf("relay MAIL: %w", werr)
 	}
-	defer client.Close()
-
-	if cfg.SMTPUsername != "" {
-		auth := smtp.PlainAuth("", cfg.SMTPUsername, cfg.SMTPPassword, host)
-		if aerr := client.Auth(auth); aerr != nil {
-			return "", "", fmt.Errorf("SMTP auth: %w", aerr)
-		}
+	if rerr := c.Rcpt(to); rerr != nil {
+		return "", "", fmt.Errorf("relay RCPT: %w", rerr)
 	}
-
-	if werr := client.Mail(from); werr != nil {
-		return "", "", fmt.Errorf("SMTP MAIL: %w", werr)
-	}
-	if rerr := client.Rcpt(to); rerr != nil {
-		return "", "", fmt.Errorf("SMTP RCPT: %w", rerr)
-	}
-	w, werr := client.Data()
+	w, werr := c.Data()
 	if werr != nil {
-		return "", "", fmt.Errorf("SMTP DATA: %w", werr)
+		return "", "", fmt.Errorf("relay DATA: %w", werr)
 	}
 	if _, werr = io.WriteString(w, msg); werr != nil {
-		return "", "", fmt.Errorf("SMTP write: %w", werr)
+		return "", "", fmt.Errorf("relay write: %w", werr)
 	}
 	if werr = w.Close(); werr != nil {
-		return "", "", fmt.Errorf("SMTP close data: %w", werr)
+		return "", "", fmt.Errorf("relay close data: %w", werr)
 	}
-	if qerr := client.Quit(); qerr != nil {
-		return "", "", fmt.Errorf("SMTP quit: %w", qerr)
+	if qerr := c.Quit(); qerr != nil {
+		return "", "", fmt.Errorf("relay quit: %w", qerr)
 	}
 
 	st := fmt.Sprintf("sent to %s", to)
@@ -281,115 +291,6 @@ func buildMailMessage(from, to, subject, body string) string {
 	fmt.Fprintf(&b, "Content-Type: text/plain; charset=UTF-8\r\n\r\n")
 	b.WriteString(body)
 	return b.String()
-}
-
-/* ------------------------------------------------------------------ */
-/* MailApp.read                                                        */
-/* ------------------------------------------------------------------ */
-
-type mailSummary struct {
-	From    string `json:"from"`
-	Subject string `json:"subject"`
-	Date    string `json:"date"`
-	Snippet string `json:"snippet"`
-}
-
-func (s *Service) readMail(ctx context.Context, cfg settings.Mail, params map[string]string, token []byte) (result, status, response string, err error) {
-	if cfg.IMAPHost == "" {
-		return "", "", "", fmt.Errorf("IMAP is not configured")
-	}
-	folder := firstNonEmpty(params["folder"], "INBOX")
-	limit := 5
-	if v := params["limit"]; v != "" {
-		n := 0
-		if _, perr := fmt.Sscanf(v, "%d", &n); perr == nil && n > 0 && n <= 25 {
-			limit = n
-		}
-	}
-
-	addr := fmt.Sprintf("%s:%d", cfg.IMAPHost, cfg.IMAPPort)
-	var c *imapclient.Client
-	var derr error
-	if cfg.IMAPTLS {
-		c, derr = imapclient.DialTLS(addr, nil)
-	} else {
-		// Plaintext IMAP is an explicit admin choice for trusted backends
-		// (the local mock rig) — the same trust level as plain SMTP above.
-		c, derr = imapclient.DialInsecure(addr, nil)
-	}
-	if derr != nil {
-		return "", "", "", fmt.Errorf("IMAP dial: %w", derr)
-	}
-	defer c.Logout()
-
-	user := firstNonEmpty(cfg.IMAPUsername, cfg.SMTPUsername)
-	pass := firstNonEmpty(cfg.IMAPPassword, cfg.SMTPPassword)
-	if lerr := c.Login(user, pass).Wait(); lerr != nil {
-		return "", "", "", fmt.Errorf("IMAP login: %w", lerr)
-	}
-	mbox, serr := c.Select(folder, nil).Wait()
-	if serr != nil {
-		return "", "", "", fmt.Errorf("IMAP select %s: %w", folder, serr)
-	}
-
-	out := []mailSummary{}
-	if mbox.NumMessages > 0 {
-		start := uint32(1)
-		if mbox.NumMessages > uint32(limit) {
-			start = mbox.NumMessages - uint32(limit) + 1
-		}
-		seq := new(imap.SeqSet)
-		seq.AddRange(start, mbox.NumMessages)
-
-		// Fetch takes the SeqSet by value (its NumSet type switch rejects
-		// the pointer form); AddRange is a pointer method, so build with
-		// new() and pass the dereference.
-		fetch := c.Fetch(*seq, &imap.FetchOptions{
-			Envelope:    true,
-			BodySection: []*imap.FetchItemBodySection{{}},
-		})
-		for {
-			msg := fetch.Next()
-			if msg == nil {
-				break
-			}
-			buf, cerr := msg.Collect()
-			if cerr != nil {
-				continue
-			}
-			m := mailSummary{Subject: "(no subject)"}
-			if buf.Envelope != nil {
-				if len(buf.Envelope.From) > 0 {
-					m.From = buf.Envelope.From[0].Mailbox + "@" + buf.Envelope.From[0].Host
-				}
-				if buf.Envelope.Subject != "" {
-					m.Subject = buf.Envelope.Subject
-				}
-				if !buf.Envelope.Date.IsZero() {
-					m.Date = buf.Envelope.Date.Format(time.RFC3339)
-				}
-			}
-			for _, sec := range buf.BodySection {
-				m.Snippet = clamp(strings.TrimSpace(string(sec.Bytes)), 200)
-				break
-			}
-			out = append(out, m)
-		}
-		if ferr := fetch.Close(); ferr != nil {
-			return "", "", "", fmt.Errorf("IMAP fetch: %w", ferr)
-		}
-	}
-	// Most recent last → newest at the end of the token.
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
-
-	raw, merr := json.MarshalIndent(out, "", "  ")
-	if merr != nil {
-		return "", "", "", merr
-	}
-	st := fmt.Sprintf("%d messages from %s", len(out), folder)
-	return string(raw), st, clamp(st, 200), nil
 }
 
 /* ------------------------------------------------------------------ */
@@ -477,13 +378,10 @@ func domainAllowed(host string, allowed []string) bool {
 }
 
 /* ------------------------------------------------------------------ */
-/* Logger.log → Loki                                                   */
+/* Logger.log → the hard-wired bundled Loki                           */
 /* ------------------------------------------------------------------ */
 
-func (s *Service) pushLoki(ctx context.Context, cfg settings.Logger, actor Actor, name string, params map[string]string, token []byte) (status, response string, err error) {
-	if cfg.PushURL == "" {
-		return "", "", fmt.Errorf("logger app is not configured (no Loki push URL)")
-	}
+func (s *Service) pushLoki(ctx context.Context, actor Actor, name string, params map[string]string, token []byte) (status, response string, err error) {
 	message := firstNonEmpty(params["message"], string(token))
 	if message == "" {
 		message = "(empty)"
@@ -510,24 +408,14 @@ func (s *Service) pushLoki(ctx context.Context, cfg settings.Logger, actor Actor
 	}
 	raw, _ := json.Marshal(payload)
 
-	timeout := cfg.TimeoutSeconds
-	if timeout <= 0 {
-		timeout = 5
-	}
-	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, lokiTimeout)
 	defer cancel()
 
-	req, rerr := http.NewRequestWithContext(reqCtx, http.MethodPost, cfg.PushURL, bytes.NewReader(raw))
+	req, rerr := http.NewRequestWithContext(reqCtx, http.MethodPost, lokiPushURL, bytes.NewReader(raw))
 	if rerr != nil {
 		return "", "", rerr
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if cfg.Tenant != "" {
-		req.Header.Set("X-Scope-OrgID", cfg.Tenant)
-	}
-	if cfg.Username != "" {
-		req.SetBasicAuth(cfg.Username, cfg.Password)
-	}
 
 	resp, derr := s.http.Do(req)
 	if derr != nil {

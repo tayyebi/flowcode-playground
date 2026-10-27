@@ -187,7 +187,9 @@ func (s *Server) recordExecution(
 		}
 	}
 
-	// Persist mail/http call records (logger lives in Loki only).
+	// Persist mail/http call records — the run transcript. Logger.log user
+	// entries live in Loki only; every call's operational line goes to
+	// data/logs/<app>.log via the apps service.
 	if result != nil && len(result.AppCalls) > 0 {
 		calls := []*store.AppCall{}
 		uid := actorID

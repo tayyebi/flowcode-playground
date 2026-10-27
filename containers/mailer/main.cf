@@ -1,0 +1,51 @@
+# Send-only Postfix relay for the Mail app. scripts/mailer-entrypoint.sh
+# renders this to /etc/postfix/main.cf, replacing @MAIL_NAME@ (the sending
+# hostname — must match the host's PTR record and the domain's SPF) and
+# @MYNETWORKS@ (who may hand the relay mail).
+#
+# Posture: no credentials in or out (direct-to-MX), no mailboxes, no local
+# delivery, reachable only on the compose network (port 25 is never
+# published; postgres is the model). Loki is the same kind of bundled-yet-
+# external backend, for the Logger app.
+
+# Identity.
+myhostname = @MAIL_NAME@
+myorigin = $myhostname
+smtpd_banner = $myhostname ESMTP flowcode-mailer
+
+# Trusted submitters: loopback + private ranges (compose networks live
+# there). The unpublished port is the real boundary; this is defense in
+# depth.
+mynetworks = @MYNETWORKS@
+
+# Pure send-only relay: nothing is local, so every recipient resolves via
+# DNS and leaves through its MX. No mailboxes, no IMAP, nothing to read.
+mydestination =
+local_transport = error:local delivery disabled
+local_recipient_maps =
+
+# Direct-to-MX: no smarthost, no credentials anywhere.
+relayhost =
+
+# Only trusted networks may relay; strangers are refused (there are none —
+# the port is not published).
+smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination
+smtpd_recipient_restrictions = permit_mynetworks, reject_unauth_destination
+
+# The inbound hop is the compose network: plain SMTP, no TLS, no auth —
+# exactly what MailApp.sendEmail speaks. Outbound uses opportunistic TLS.
+smtpd_tls_security_level = none
+smtpd_sasl_auth_enable = no
+smtp_tls_security_level = may
+
+# Sane limit for a playground relay.
+message_size_limit = 10240000
+
+# Container life: log to the container's own stdout, queue on the
+# mailer-spool volume. Chroot is disabled per-service by the entrypoint
+# (the container is the jail).
+maillog_file = /dev/stdout
+maillog_file_prefixes = /dev/stdout
+
+# Current semantics; silences the backwards-compatibility warning.
+compatibility_level = 3.9
