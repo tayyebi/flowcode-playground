@@ -1,4 +1,4 @@
-{{template "admin-top.gohtml" .}}
+{{template "top.gohtml" .}}
 
 <h1>{{if eq .App "mail"}}Mail app{{else if eq .App "http"}}HTTP app{{else}}App{{end}} — Logs</h1>
 <p class="note">Every bridge call this app made, newest first. Logger entries are not here — they live in <a href="/admin/logger/logs">Loki</a>.</p>
@@ -24,4 +24,4 @@
 <p class="note">No calls recorded yet.</p>
 {{end}}
 
-{{template "admin-bottom.gohtml" .}}
+{{template "bottom.gohtml" .}}

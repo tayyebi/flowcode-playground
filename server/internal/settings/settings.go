@@ -112,8 +112,9 @@ const (
 	KeyQuotas = "quotas"
 	KeyRun    = "run"
 
-	KeySessionSecret = "__session_secret"
-	KeyServiceToken  = "__service_token"
+	KeySessionSecret      = "__session_secret"
+	KeyServiceToken       = "__service_token"
+	KeyAdminSessionSecret = "__admin_session_secret"
 )
 
 // Manager caches the current Snapshot and reloads it on demand.

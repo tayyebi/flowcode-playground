@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,14 +28,16 @@ import (
 // Configuration splits in two by necessity: the OIDC credentials live in the
 // environment because they are needed to boot the identity layer itself, and
 // everything else (app credentials, limits, quotas) is admin-managed rows in
-// system_settings, loaded through the settings manager.
+// system_settings, loaded through the settings manager — the administration
+// area is a separate binary writing the same database.
 type Server struct {
 	TrustProxy bool
 
 	auth         *auth
-	serviceToken string
+	serviceToken atomic.Pointer[string] // system_settings.__service_token, hot-swapped on reload
 	settings     *settings.Manager
 	appsSvc      *apps.Service
+	internalAddr string // optional internal listener (admin→app reload API)
 
 	engine        *engine.Engine
 	deployLimiter *rateLimiter
@@ -56,6 +58,7 @@ func main() {
 	done := make(chan struct{})
 	go srv.deployLimiter.run(done)
 	go srv.scheduler.Run(done)
+	go srv.refreshSettingsLoop(done)
 
 	httpServer := &http.Server{
 		Addr:    addr,
@@ -67,6 +70,23 @@ func main() {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      srv.engine.Timeout*2 + 15*time.Second,
 		IdleTimeout:       60 * time.Second,
+	}
+
+	// The internal listener is never published; only the admin binary (on
+	// the compose network) reaches it, authenticated by the service token.
+	var internalServer *http.Server
+	if srv.internalAddr != "" {
+		internalServer = &http.Server{
+			Addr:              srv.internalAddr,
+			Handler:           logRequests(srv.internalRoutes()),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			log.Printf("internal API listening on %s", srv.internalAddr)
+			if err := internalServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("internal listen: %v", err)
+			}
+		}()
 	}
 
 	// Shut down on SIGTERM so `docker compose down` doesn't sever in-flight
@@ -91,6 +111,11 @@ func main() {
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
+	if internalServer != nil {
+		if err := internalServer.Shutdown(ctx); err != nil {
+			log.Printf("internal shutdown failed: %v", err)
+		}
+	}
 	if err := srv.sqlDB.Close(); err != nil {
 		log.Printf("closing database: %v", err)
 	}
@@ -109,7 +134,10 @@ func newServerFromEnv() (*Server, error) {
 	compilerPath := env("FLOWCODE_FCC", "/usr/local/bin/fcc")
 	runnerPath := env("FLOWCODE_RUNNER", "/usr/local/bin/fcplay")
 	workDir := env("PLAYGROUND_WORKDIR", "/run/play")
-	dbPath := env("PLAYGROUND_DB_PATH", "/data/playground.db")
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return nil, errors.New("DATABASE_URL is required")
+	}
 
 	// Fail loudly at startup rather than returning 500s later: a missing
 	// binary or an unreadable working directory is a broken deploy, and it
@@ -123,16 +151,14 @@ func newServerFromEnv() (*Server, error) {
 	if err := checkWritableDir(workDir); err != nil {
 		return nil, err
 	}
-	if err := checkWritableDir(filepath.Dir(dbPath)); err != nil {
-		return nil, err
-	}
 
-	sqlDB, err := db.Open(dbPath)
+	sqlDB, err := db.Open(dsn, 10)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Generous enough for the OIDC discovery retry loop on a cold boot.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	st := store.New(sqlDB)
@@ -166,15 +192,16 @@ func newServerFromEnv() (*Server, error) {
 	s := &Server{
 		TrustProxy:    env("TRUST_PROXY", "") == "1",
 		auth:          provider,
-		serviceToken:  serviceToken,
 		settings:      mgr,
 		appsSvc:       appsSvc,
+		internalAddr:  env("INTERNAL_ADDR", ""),
 		engine:        eng,
 		deployLimiter: newRateLimiter(run.DeployRatePerMinute, run.DeployRateBurst, 10*time.Minute),
 		store:         st,
 		scheduler:     scheduler.New(st, eng),
 		sqlDB:         sqlDB,
 	}
+	s.serviceToken.Store(&serviceToken)
 
 	return s, nil
 }
@@ -182,10 +209,10 @@ func newServerFromEnv() (*Server, error) {
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("GET /static/style.css", handleStaticCSS)
 
 	// Auth: /login shows the (single-button) sign-in page, /login/go starts
 	// the OIDC redirect, the provider comes back to /api/auth/callback.
+	// Static assets are NOT served here — nginx owns /static/ outright.
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("GET /login", s.handleLoginPage)
 	mux.HandleFunc("GET /login/go", s.handleLoginStart)
@@ -213,27 +240,6 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /projects/{id}/triggers/{trigId}/delete", page(s.handleDeleteTriggerPage))
 	mux.HandleFunc("GET /projects/{id}/executions/{execId}", page(s.handleExecutionPage))
 	mux.HandleFunc("POST /projects/{id}/kv/{key}/delete", page(s.handleDeleteKVPage))
-
-	// System administration area: is_admin-gated sidebar pages.
-	adminPage := s.requireAdminPage
-	mux.HandleFunc("GET /admin", adminPage(s.handleAdminHomePage))
-	mux.HandleFunc("GET /admin/mail", adminPage(s.handleAdminMailPage))
-	mux.HandleFunc("POST /admin/mail", adminPage(s.handleAdminMailSave))
-	mux.HandleFunc("GET /admin/mail/logs", adminPage(s.handleAdminMailLogsPage))
-	mux.HandleFunc("GET /admin/http", adminPage(s.handleAdminHTTPPage))
-	mux.HandleFunc("POST /admin/http", adminPage(s.handleAdminHTTPSave))
-	mux.HandleFunc("GET /admin/http/logs", adminPage(s.handleAdminHTTPLogsPage))
-	mux.HandleFunc("GET /admin/logger", adminPage(s.handleAdminLoggerPage))
-	mux.HandleFunc("POST /admin/logger", adminPage(s.handleAdminLoggerSave))
-	mux.HandleFunc("GET /admin/logger/logs", adminPage(s.handleAdminLoggerLogsPage))
-	mux.HandleFunc("GET /admin/quotas", adminPage(s.handleAdminQuotasPage))
-	mux.HandleFunc("POST /admin/quotas", adminPage(s.handleAdminQuotaSave))
-	mux.HandleFunc("POST /admin/quotas/delete", adminPage(s.handleAdminQuotaDelete))
-	mux.HandleFunc("GET /admin/users", adminPage(s.handleAdminUsersPage))
-	mux.HandleFunc("GET /admin/executions", adminPage(s.handleAdminExecutionsPage))
-	mux.HandleFunc("GET /admin/general", adminPage(s.handleAdminGeneralPage))
-	mux.HandleFunc("POST /admin/general", adminPage(s.handleAdminGeneralSave))
-	mux.HandleFunc("POST /admin/service-token/rotate", adminPage(s.handleAdminRotateServiceToken))
 
 	// JSON API — same handlers, session or service-token auth.
 	user := s.requireUser

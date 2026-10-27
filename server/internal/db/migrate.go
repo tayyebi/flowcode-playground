@@ -13,11 +13,14 @@ import (
 var migrationsFS embed.FS
 
 // migrate applies every embedded migration that schema_migrations doesn't
-// already record, in numeric order, each inside its own transaction.
+// already record, in numeric order, each inside its own transaction. A
+// migration file carries both its DDL and, appended after it, the idempotent
+// seed INSERTs for the tables it creates — so the database is fully
+// populated the moment the migration commits.
 func migrate(sqlDB *sql.DB) error {
 	if _, err := sqlDB.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
-		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
@@ -50,7 +53,7 @@ func migrate(sqlDB *sql.DB) error {
 
 	for _, m := range migrations {
 		var applied int
-		if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&applied); err != nil {
+		if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = $1`, m.version).Scan(&applied); err != nil {
 			return fmt.Errorf("check migration %d: %w", m.version, err)
 		}
 		if applied > 0 {
@@ -70,7 +73,7 @@ func migrate(sqlDB *sql.DB) error {
 			tx.Rollback()
 			return fmt.Errorf("apply migration %s: %w", m.name, err)
 		}
-		if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, m.version); err != nil {
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES ($1)`, m.version); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", m.version, err)
 		}

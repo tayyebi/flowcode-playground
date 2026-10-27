@@ -6,7 +6,9 @@
 #
 #   oidc-mock      a complete mock OIDC provider — full code flow with real
 #                  RS256-signed ID tokens, GUI at http://localhost:9400
-#                  (identity picker on login, identity manager, login log)
+#                  (identity picker on login, identity manager, login log).
+#                  It accepts any client_id/secret, so the admin area's
+#                  second client needs no extra registration.
 #   mail-mock      an SMTP sink with an inbox GUI at http://localhost:8025;
 #                  accept SMTP internally on :1025 (configure the Mail app
 #                  with host `mail-mock`, port 1025)
@@ -14,23 +16,34 @@
 #                  query_range, GUI at http://localhost:3100 (configure the
 #                  Logger app with push URL `http://loki-mock:3100`)
 #
-#   oidc-localhost-bridge  the issuer is http://localhost:9400, which the
-#                  browser reaches via the published port — but the
-#                  playground container would resolve "localhost" to itself.
-#                  This tiny socat sidecar shares the playground's network
-#                  namespace and forwards its localhost:9400 to the host, so
-#                  one issuer string works for both.
+#   oidc-localhost-bridge / admin-oidc-localhost-bridge
+#                  the issuer is http://localhost:9400, which the browser
+#                  reaches via the published port — but each Go container
+#                  would resolve "localhost" to itself. One socat sidecar
+#                  per service shares its network namespace and forwards
+#                  its localhost:9400 to the mock, so one issuer string
+#                  works for browser and backend alike.
 #
-# The base compose file still interpolates ${OIDC_ISSUER:?} at parse time, so
-# create a `.env` next to it (or export the vars) before `up`:
+# The base compose file still interpolates ${OIDC_ISSUER:?} and friends at
+# parse time, so create a `.env` next to it (or export the vars) before
+# `up`:
 #
 #   cat > .env <<'EOF'
 #   OIDC_ISSUER=http://localhost:9400
 #   OIDC_CLIENT_ID=playground
 #   OIDC_CLIENT_SECRET=mock-secret
+#   OIDC_ADMIN_CLIENT_ID=playground-admin
+#   OIDC_ADMIN_CLIENT_SECRET=mock-secret
+#   ADMIN_EMAILS=admin@example.com
+#   # ports 80/443 are the defaults; remap if your machine has them taken:
+#   # HTTPS_PORT=8443
+#   # HTTP_PORT=8080
 #   EOF
 #
-# Then sign in at http://localhost:8033 and pick an identity.
+# Then sign in at https://localhost (accept the self-signed certificate)
+# and pick an identity. The administration area lives at
+# https://localhost/admin — sign in there with the allowlisted
+# admin@example.com identity from the mock's picker.
 
 x-mock-base: &mock-base
   image: golang:1.26-alpine
@@ -54,8 +67,18 @@ services:
       OIDC_ISSUER: "http://localhost:9400"
       OIDC_CLIENT_ID: "playground"
       OIDC_CLIENT_SECRET: "mock-secret"
-      OIDC_REDIRECT_URL: "http://localhost:8033/api/auth/callback"
+      OIDC_REDIRECT_URL: "https://localhost/api/auth/callback"
       LOKI_URL: "http://loki-mock:3100"
+
+  admin:
+    depends_on:
+      - oidc-mock
+    environment:
+      OIDC_ISSUER: "http://localhost:9400"
+      OIDC_CLIENT_ID: "playground-admin"
+      OIDC_CLIENT_SECRET: "mock-secret"
+      OIDC_REDIRECT_URL: "https://localhost/admin/api/auth/callback"
+      ADMIN_EMAILS: "admin@example.com"
 
   oidc-mock:
     <<: *mock-base
@@ -79,6 +102,23 @@ services:
     command: "TCP-LISTEN:9400,fork,reuseaddr TCP:oidc-mock:9400"
     depends_on:
       - playground
+      - oidc-mock
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # The admin service does its own OIDC discovery, so it needs the same
+  # localhost view of the mock through its own network namespace.
+  admin-oidc-localhost-bridge:
+    image: alpine/socat
+    container_name: flowcode-admin-oidc-bridge
+    restart: unless-stopped
+    network_mode: "service:admin"
+    command: "TCP-LISTEN:9400,fork,reuseaddr TCP:oidc-mock:9400"
+    depends_on:
+      - admin
       - oidc-mock
     logging:
       driver: json-file

@@ -21,7 +21,7 @@ import (
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
 )
 
-//go:embed web/templates/*.gohtml web/static/style.css
+//go:embed web/templates/*.gohtml
 var webFS embed.FS
 
 var pageTemplates = template.Must(template.ParseFS(webFS, "web/templates/*.gohtml"))
@@ -64,17 +64,6 @@ func (s *Server) renderPage(w http.ResponseWriter, status int, name string, data
 	}
 }
 
-func handleStaticCSS(w http.ResponseWriter, r *http.Request) {
-	b, err := webFS.ReadFile("web/static/style.css")
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	w.Write(b)
-}
-
 /* ------------------------------------------------------------------ */
 /* Entry, login                                                        */
 /* ------------------------------------------------------------------ */
@@ -89,7 +78,6 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 type loginPage struct {
 	basePage
-	BadToken bool // legacy field kept so the template compiles during transition
 }
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {

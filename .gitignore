@@ -3,13 +3,20 @@
 # README use.
 server/server
 server/playground
+server/admin
 
 # docker-compose.yml bind-mounts the whole repo, so every build cache
 # (apk, FlowCode's git clone, Go's module/build cache, npm's cache) and the
 # compiled binaries live here on the host, deliberately, across deploys.
 /.buildcache/
 
-# Persistent SQLite database.
+# TLS certificates for the nginx proxy: a self-signed pair is generated on
+# first boot; replace the two files with real ones and restart. Persistent
+# between runs on purpose — do not commit.
+/certs/*.pem
+
+# Legacy SQLite database from before the PostgreSQL migration. No longer
+# read by anything, but kept locally (it holds user content), never committed.
 /data/
 
 # Local environment overrides

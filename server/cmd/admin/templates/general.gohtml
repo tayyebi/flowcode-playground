@@ -1,9 +1,10 @@
-{{template "admin-top.gohtml" .}}
+{{template "top.gohtml" .}}
 
 <h1>General</h1>
-<p class="note">Sandbox limits apply on restart; timeouts and rate limits sooner where
-noted. The service token authenticates the JSON API for scripts — rotating it
-shows the new value exactly once.</p>
+<p class="note">Sandbox limits apply when the app service restarts; the app picks the
+saved values up on the next reload (at most a minute). The service token
+authenticates the JSON API for scripts — rotating it shows the new value
+exactly once.</p>
 
 <form method="post" action="/admin/general" class="card">
   <div class="row-form">
@@ -28,4 +29,4 @@ shows the new value exactly once.</p>
   <button type="submit" class="btn btn-danger">Rotate the service token</button>
 </form>
 
-{{template "admin-bottom.gohtml" .}}
+{{template "bottom.gohtml" .}}

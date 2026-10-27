@@ -1,8 +1,8 @@
-{{template "admin-top.gohtml" .}}
+{{template "top.gohtml" .}}
 
 <h1>Administration</h1>
-<p class="note">System administrators are promoted manually from the database —
-<code>UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';</code></p>
+<p class="note">A separate service from the playground: its own sign-on, its own
+allowlist ({{.AdminCount}} administrator(s)), one shared database.</p>
 
 <table class="list meta">
   <tr><th>Mail app</th><td>{{if .Mail}}<span class="tag tag-ok">enabled</span>{{else}}<span class="tag tag-muted">disabled</span>{{end}} <a href="/admin/mail">configure</a></td></tr>
@@ -11,4 +11,4 @@
   <tr><th>Default quotas</th><td>mail {{.Quotas.MailPerMinute}}/min · http {{.Quotas.HTTPPerMinute}}/min · logger {{.Quotas.LoggerPerMinute}}/min</td></tr>
 </table>
 
-{{template "admin-bottom.gohtml" .}}
+{{template "bottom.gohtml" .}}

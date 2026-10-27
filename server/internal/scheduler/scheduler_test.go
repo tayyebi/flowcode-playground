@@ -2,28 +2,23 @@ package scheduler
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/tayyebi/flowcode-playground/server/internal/db"
 	"github.com/tayyebi/flowcode-playground/server/internal/engine"
 	"github.com/tayyebi/flowcode-playground/server/internal/store"
+	"github.com/tayyebi/flowcode-playground/server/internal/testdb"
 )
 
-// newTestScheduler wires a Scheduler against a real store and a real Engine
-// pointed at nonexistent binaries. That's enough to exercise the
+// newTestScheduler wires a Scheduler against a real store (PostgreSQL via
+// TEST_DATABASE_URL, see internal/testdb) and a real Engine pointed at
+// nonexistent binaries. That's enough to exercise the
 // record-execution-and-reschedule logic without needing the fcc/fcplay
 // toolchain: a missing binary still produces a well-formed engine.Result
 // (ExitCode -1, Error set), it just never runs anything real.
 func newTestScheduler(t *testing.T) (*Scheduler, *store.Store) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
-	st := store.New(sqlDB)
+	st := store.New(testdb.Open(t))
 
 	eng := engine.New("/nonexistent-fcc", "/nonexistent-fcplay", t.TempDir(),
 		time.Second, time.Second, 4096, 2)

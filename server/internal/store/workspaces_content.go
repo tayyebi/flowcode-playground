@@ -6,20 +6,13 @@ import (
 	"fmt"
 )
 
-// This file gives every workspace-scoped CRUD method the same name as its
-// legacy single-tenant twin, with a `ws` prefix on the tables it touches.
-// The legacy methods (CreateProject, ListFiles, ...) keep serving only the
-// break-glass admin path against the phase-A tables; all authenticated SaaS
-// traffic goes through these.
-//
-// Table mapping: projects→ws_projects, files→ws_files, versions→ws_versions,
-// version_files→ws_version_files, deployments→ws_deployments,
-// triggers→ws_triggers, executions→ws_executions, kv_store→ws_kv_store.
+// This file holds the workspace-scoped CRUD for projects, files, versions,
+// deployments, triggers, executions, and kv — everything a user's project
+// workspace is made of.
 
 const wsProjectColumns = "id, workspace_id, COALESCE(created_by, 0), slug, name, description, created_at, updated_at"
 
-// WSProject is a project inside a workspace — the SaaS-phase replacement for
-// Project, which stays as the legacy/admin shape.
+// WSProject is a project inside a workspace.
 type WSProject struct {
 	ID          int64  `json:"id"`
 	WorkspaceID int64  `json:"workspaceId"`
@@ -52,18 +45,15 @@ func (s *Store) CreateWSProject(ctx context.Context, workspaceID, createdBy int6
 		if attempt > 0 {
 			slug = fmt.Sprintf("%s-%d", base, attempt+1)
 		}
-		res, err := s.db.ExecContext(ctx,
-			`INSERT INTO ws_projects (workspace_id, created_by, slug, name, description) VALUES (?, ?, ?, ?, ?)`,
-			workspaceID, createdBy, slug, name, description)
+		var id int64
+		err := s.db.QueryRowContext(ctx,
+			`INSERT INTO ws_projects (workspace_id, created_by, slug, name, description) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			workspaceID, createdBy, slug, name, description).Scan(&id)
 		if err != nil {
 			if isUniqueViolation(err) {
 				continue
 			}
 			return nil, fmt.Errorf("insert ws project: %w", err)
-		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, fmt.Errorf("last insert id: %w", err)
 		}
 		return s.GetWSProject(ctx, id)
 	}
@@ -71,20 +61,20 @@ func (s *Store) CreateWSProject(ctx context.Context, workspaceID, createdBy int6
 }
 
 func (s *Store) GetWSProject(ctx context.Context, id int64) (*WSProject, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+wsProjectColumns+` FROM ws_projects WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+wsProjectColumns+` FROM ws_projects WHERE id = $1`, id)
 	return scanWSProject(row)
 }
 
 func (s *Store) UpdateWSProject(ctx context.Context, id int64, name, description *string) (*WSProject, error) {
 	if name != nil {
 		if _, err := s.db.ExecContext(ctx,
-			`UPDATE ws_projects SET name = ?, updated_at = datetime('now') WHERE id = ?`, *name, id); err != nil {
+			`UPDATE ws_projects SET name = $1, updated_at = now_utc() WHERE id = $2`, *name, id); err != nil {
 			return nil, fmt.Errorf("update ws project name: %w", err)
 		}
 	}
 	if description != nil {
 		if _, err := s.db.ExecContext(ctx,
-			`UPDATE ws_projects SET description = ?, updated_at = datetime('now') WHERE id = ?`, *description, id); err != nil {
+			`UPDATE ws_projects SET description = $1, updated_at = now_utc() WHERE id = $2`, *description, id); err != nil {
 			return nil, fmt.Errorf("update ws project description: %w", err)
 		}
 	}
@@ -92,7 +82,7 @@ func (s *Store) UpdateWSProject(ctx context.Context, id int64, name, description
 }
 
 func (s *Store) DeleteWSProject(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_projects WHERE id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_projects WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete ws project: %w", err)
 	}
@@ -100,7 +90,7 @@ func (s *Store) DeleteWSProject(ctx context.Context, id int64) error {
 }
 
 func (s *Store) touchWSProject(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE ws_projects SET updated_at = datetime('now') WHERE id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE ws_projects SET updated_at = now_utc() WHERE id = $1`, id)
 	return err
 }
 
@@ -108,7 +98,7 @@ func (s *Store) touchWSProject(ctx context.Context, id int64) error {
 
 func (s *Store) ListWSFiles(ctx context.Context, projectID int64) ([]*File, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+fileColumns+` FROM ws_files WHERE project_id = ? ORDER BY position, name`, projectID)
+		`SELECT `+fileColumns+` FROM ws_files WHERE project_id = $1 ORDER BY position, name`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list ws files: %w", err)
 	}
@@ -127,12 +117,12 @@ func (s *Store) ListWSFiles(ctx context.Context, projectID int64) ([]*File, erro
 
 func (s *Store) GetWSFile(ctx context.Context, projectID int64, name string) (*File, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+fileColumns+` FROM ws_files WHERE project_id = ? AND name = ?`, projectID, name)
+		`SELECT `+fileColumns+` FROM ws_files WHERE project_id = $1 AND name = $2`, projectID, name)
 	return scanFile(row)
 }
 
 func (s *Store) GetWSFileByID(ctx context.Context, id int64) (*File, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+fileColumns+` FROM ws_files WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+fileColumns+` FROM ws_files WHERE id = $1`, id)
 	return scanFile(row)
 }
 
@@ -140,7 +130,7 @@ func (s *Store) UpsertWSFile(ctx context.Context, projectID int64, name, content
 	existing, err := s.GetWSFile(ctx, projectID, name)
 	if err == nil {
 		if _, err := s.db.ExecContext(ctx,
-			`UPDATE ws_files SET content = ?, updated_at = datetime('now') WHERE id = ?`, content, existing.ID); err != nil {
+			`UPDATE ws_files SET content = $1, updated_at = now_utc() WHERE id = $2`, content, existing.ID); err != nil {
 			return nil, fmt.Errorf("update ws file: %w", err)
 		}
 		s.touchWSProject(ctx, projectID)
@@ -152,26 +142,22 @@ func (s *Store) UpsertWSFile(ctx context.Context, projectID int64, name, content
 
 	var nextPos int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(position) + 1, 0) FROM ws_files WHERE project_id = ?`, projectID).Scan(&nextPos); err != nil {
+		`SELECT COALESCE(MAX(position) + 1, 0) FROM ws_files WHERE project_id = $1`, projectID).Scan(&nextPos); err != nil {
 		return nil, fmt.Errorf("compute next position: %w", err)
 	}
 
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO ws_files (project_id, name, content, position) VALUES (?, ?, ?, ?)`,
-		projectID, name, content, nextPos)
-	if err != nil {
+	var id int64
+	if err := s.db.QueryRowContext(ctx,
+		`INSERT INTO ws_files (project_id, name, content, position) VALUES ($1, $2, $3, $4) RETURNING id`,
+		projectID, name, content, nextPos).Scan(&id); err != nil {
 		return nil, fmt.Errorf("insert ws file: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("last insert id: %w", err)
 	}
 	s.touchWSProject(ctx, projectID)
 	return s.GetWSFileByID(ctx, id)
 }
 
 func (s *Store) DeleteWSFile(ctx context.Context, projectID int64, name string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM ws_files WHERE project_id = ? AND name = ?`, projectID, name); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM ws_files WHERE project_id = $1 AND name = $2`, projectID, name); err != nil {
 		return fmt.Errorf("delete ws file: %w", err)
 	}
 	return s.touchWSProject(ctx, projectID)
@@ -206,23 +192,20 @@ func (s *Store) CreateWSVersion(ctx context.Context, projectID int64, label stri
 
 	var nextNumber int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(number) + 1, 1) FROM ws_versions WHERE project_id = ?`, projectID).Scan(&nextNumber); err != nil {
+		`SELECT COALESCE(MAX(number) + 1, 1) FROM ws_versions WHERE project_id = $1`, projectID).Scan(&nextNumber); err != nil {
 		return nil, fmt.Errorf("compute next version number: %w", err)
 	}
 
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO ws_versions (project_id, number, label) VALUES (?, ?, ?)`, projectID, nextNumber, label)
-	if err != nil {
+	var versionID int64
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO ws_versions (project_id, number, label) VALUES ($1, $2, $3) RETURNING id`,
+		projectID, nextNumber, label).Scan(&versionID); err != nil {
 		return nil, fmt.Errorf("insert ws version: %w", err)
-	}
-	versionID, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("last insert id: %w", err)
 	}
 
 	for _, f := range files {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO ws_version_files (version_id, name, content) VALUES (?, ?, ?)`,
+			`INSERT INTO ws_version_files (version_id, name, content) VALUES ($1, $2, $3)`,
 			versionID, f.Name, f.Content); err != nil {
 			return nil, fmt.Errorf("insert ws version file %s: %w", f.Name, err)
 		}
@@ -235,19 +218,19 @@ func (s *Store) CreateWSVersion(ctx context.Context, projectID int64, label stri
 }
 
 func (s *Store) GetWSVersion(ctx context.Context, id int64) (*Version, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+wsVersionColumns+` FROM ws_versions WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+wsVersionColumns+` FROM ws_versions WHERE id = $1`, id)
 	return scanWSVersion(row)
 }
 
 func (s *Store) GetWSVersionByNumber(ctx context.Context, projectID int64, number int) (*Version, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+wsVersionColumns+` FROM ws_versions WHERE project_id = ? AND number = ?`, projectID, number)
+		`SELECT `+wsVersionColumns+` FROM ws_versions WHERE project_id = $1 AND number = $2`, projectID, number)
 	return scanWSVersion(row)
 }
 
 func (s *Store) ListWSVersions(ctx context.Context, projectID int64) ([]*Version, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+wsVersionColumns+` FROM ws_versions WHERE project_id = ? ORDER BY number DESC`, projectID)
+		`SELECT `+wsVersionColumns+` FROM ws_versions WHERE project_id = $1 ORDER BY number DESC`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list ws versions: %w", err)
 	}
@@ -267,7 +250,7 @@ func (s *Store) ListWSVersions(ctx context.Context, projectID int64) ([]*Version
 func (s *Store) GetWSVersionFileContent(ctx context.Context, versionID int64, name string) (string, error) {
 	var content string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT content FROM ws_version_files WHERE version_id = ? AND name = ?`, versionID, name).Scan(&content)
+		`SELECT content FROM ws_version_files WHERE version_id = $1 AND name = $2`, versionID, name).Scan(&content)
 	if err != nil {
 		return "", err
 	}
@@ -276,7 +259,7 @@ func (s *Store) GetWSVersionFileContent(ctx context.Context, versionID int64, na
 
 func (s *Store) RestoreWSVersion(ctx context.Context, projectID, versionID int64) error {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, content FROM ws_version_files WHERE version_id = ? ORDER BY name`, versionID)
+		`SELECT name, content FROM ws_version_files WHERE version_id = $1 ORDER BY name`, versionID)
 	if err != nil {
 		return fmt.Errorf("list ws version files: %w", err)
 	}
@@ -316,18 +299,15 @@ func (s *Store) CreateWSDeployment(ctx context.Context, projectID, fileID int64,
 		if err != nil {
 			return nil, err
 		}
-		res, err := s.db.ExecContext(ctx,
-			`INSERT INTO ws_deployments (project_id, file_id, slug, version_id) VALUES (?, ?, ?, ?)`,
-			projectID, fileID, slug, versionID)
+		var id int64
+		err = s.db.QueryRowContext(ctx,
+			`INSERT INTO ws_deployments (project_id, file_id, slug, version_id) VALUES ($1, $2, $3, $4) RETURNING id`,
+			projectID, fileID, slug, versionID).Scan(&id)
 		if err != nil {
 			if isUniqueViolation(err) {
 				continue
 			}
 			return nil, fmt.Errorf("insert ws deployment: %w", err)
-		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, fmt.Errorf("last insert id: %w", err)
 		}
 		return s.GetWSDeployment(ctx, id)
 	}
@@ -335,17 +315,17 @@ func (s *Store) CreateWSDeployment(ctx context.Context, projectID, fileID int64,
 }
 
 func (s *Store) GetWSDeployment(ctx context.Context, id int64) (*Deployment, error) {
-	row := s.db.QueryRowContext(ctx, wsDeploymentQuery("d.id = ?"), id)
+	row := s.db.QueryRowContext(ctx, wsDeploymentQuery("d.id = $1"), id)
 	return scanDeployment(row)
 }
 
 func (s *Store) GetWSDeploymentBySlug(ctx context.Context, slug string) (*Deployment, error) {
-	row := s.db.QueryRowContext(ctx, wsDeploymentQuery("d.slug = ?"), slug)
+	row := s.db.QueryRowContext(ctx, wsDeploymentQuery("d.slug = $1"), slug)
 	return scanDeployment(row)
 }
 
 func (s *Store) ListWSDeployments(ctx context.Context, projectID int64) ([]*Deployment, error) {
-	rows, err := s.db.QueryContext(ctx, wsDeploymentQuery("d.project_id = ?")+" ORDER BY d.created_at DESC", projectID)
+	rows, err := s.db.QueryContext(ctx, wsDeploymentQuery("d.project_id = $1")+" ORDER BY d.created_at DESC", projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list ws deployments: %w", err)
 	}
@@ -363,17 +343,13 @@ func (s *Store) ListWSDeployments(ctx context.Context, projectID int64) ([]*Depl
 }
 
 func (s *Store) SetWSDeploymentEnabled(ctx context.Context, id int64, enabled bool) error {
-	v := 0
-	if enabled {
-		v = 1
-	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE ws_deployments SET enabled = ?, updated_at = datetime('now') WHERE id = ?`, v, id)
+		`UPDATE ws_deployments SET enabled = $1, updated_at = now_utc() WHERE id = $2`, enabled, id)
 	return err
 }
 
 func (s *Store) DeleteWSDeployment(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_deployments WHERE id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_deployments WHERE id = $1`, id)
 	return err
 }
 
@@ -386,32 +362,25 @@ func wsTriggerQuery(where string) string {
 	return `SELECT ` + wsTriggerColumns + ` FROM ws_triggers t JOIN ws_files f ON f.id = t.file_id WHERE ` + where
 }
 
-// scanTriggerFrom has the identical column layout as legacy scanTrigger, so
-// it just delegates.
-func scanTriggerFrom(row rowScanner) (*Trigger, error) { return scanTrigger(row) }
-
 func (s *Store) CreateWSTrigger(ctx context.Context, nt NewTrigger) (*Trigger, error) {
-	res, err := s.db.ExecContext(ctx,
+	var id int64
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO ws_triggers (project_id, file_id, version_id, schedule_type, interval_seconds, daily_time_utc, next_run_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		nt.ProjectID, nt.FileID, nt.VersionID, nt.ScheduleType, nt.IntervalSeconds, nullIfEmpty(nt.DailyTimeUTC), nt.NextRunAt)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		nt.ProjectID, nt.FileID, nt.VersionID, nt.ScheduleType, nt.IntervalSeconds, nullIfEmpty(nt.DailyTimeUTC), nt.NextRunAt).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert ws trigger: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("last insert id: %w", err)
 	}
 	return s.GetWSTrigger(ctx, id)
 }
 
 func (s *Store) GetWSTrigger(ctx context.Context, id int64) (*Trigger, error) {
-	row := s.db.QueryRowContext(ctx, wsTriggerQuery("t.id = ?"), id)
-	return scanTriggerFrom(row)
+	row := s.db.QueryRowContext(ctx, wsTriggerQuery("t.id = $1"), id)
+	return scanTrigger(row)
 }
 
 func (s *Store) ListWSTriggers(ctx context.Context, projectID int64) ([]*Trigger, error) {
-	rows, err := s.db.QueryContext(ctx, wsTriggerQuery("t.project_id = ?")+" ORDER BY t.created_at DESC", projectID)
+	rows, err := s.db.QueryContext(ctx, wsTriggerQuery("t.project_id = $1")+" ORDER BY t.created_at DESC", projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list ws triggers: %w", err)
 	}
@@ -419,7 +388,7 @@ func (s *Store) ListWSTriggers(ctx context.Context, projectID int64) ([]*Trigger
 
 	triggers := []*Trigger{}
 	for rows.Next() {
-		t, err := scanTriggerFrom(rows)
+		t, err := scanTrigger(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -429,7 +398,7 @@ func (s *Store) ListWSTriggers(ctx context.Context, projectID int64) ([]*Trigger
 }
 
 func (s *Store) WSDueTriggers(ctx context.Context, nowUTC string) ([]*Trigger, error) {
-	rows, err := s.db.QueryContext(ctx, wsTriggerQuery("t.enabled = 1 AND t.next_run_at <= ?"), nowUTC)
+	rows, err := s.db.QueryContext(ctx, wsTriggerQuery("t.enabled AND t.next_run_at <= $1"), nowUTC)
 	if err != nil {
 		return nil, fmt.Errorf("list ws due triggers: %w", err)
 	}
@@ -437,7 +406,7 @@ func (s *Store) WSDueTriggers(ctx context.Context, nowUTC string) ([]*Trigger, e
 
 	triggers := []*Trigger{}
 	for rows.Next() {
-		t, err := scanTriggerFrom(rows)
+		t, err := scanTrigger(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -447,24 +416,20 @@ func (s *Store) WSDueTriggers(ctx context.Context, nowUTC string) ([]*Trigger, e
 }
 
 func (s *Store) SetWSTriggerEnabled(ctx context.Context, id int64, enabled bool) error {
-	v := 0
-	if enabled {
-		v = 1
-	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE ws_triggers SET enabled = ?, updated_at = datetime('now') WHERE id = ?`, v, id)
+		`UPDATE ws_triggers SET enabled = $1, updated_at = now_utc() WHERE id = $2`, enabled, id)
 	return err
 }
 
 func (s *Store) RecordWSTriggerRun(ctx context.Context, id int64, lastRunAt, nextRunAt string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE ws_triggers SET last_run_at = ?, next_run_at = ?, updated_at = datetime('now') WHERE id = ?`,
+		`UPDATE ws_triggers SET last_run_at = $1, next_run_at = $2, updated_at = now_utc() WHERE id = $3`,
 		lastRunAt, nextRunAt, id)
 	return err
 }
 
 func (s *Store) DeleteWSTrigger(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_triggers WHERE id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_triggers WHERE id = $1`, id)
 	return err
 }
 
@@ -475,8 +440,7 @@ const wsExecutionColumns = `id, project_id, file_id, file_name, version_id, sour
 	timed_out, truncated, error`
 
 // executionFields flattens a run summary (or outright error) into the
-// columns both the legacy and ws execution inserts need. Shared so the two
-// tables can never drift in how they record an outcome.
+// columns the ws execution insert needs.
 func executionFields(ne NewExecution) (durationMs *int64, compileExit, runExit *int, compileStderr, runStderr string, timedOut, truncated bool, errMsg string) {
 	if ne.Summary != nil {
 		ce := ne.Summary.CompileExitCode
@@ -504,20 +468,17 @@ func executionFields(ne NewExecution) (durationMs *int64, compileExit, runExit *
 func (s *Store) RecordWSSExecution(ctx context.Context, ne NewExecution, actorID *int64) (*Execution, error) {
 	durationMs, compileExit, runExit, compileStderr, runStderr, timedOut, truncated, errMsg := executionFields(ne)
 
-	res, err := s.db.ExecContext(ctx,
+	var id int64
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO ws_executions (project_id, file_id, file_name, version_id, source, deployment_id, trigger_id, actor_id,
 				started_at, finished_at, duration_ms, compile_exit_code, compile_stderr, run_exit_code, run_stderr,
 				timed_out, truncated, error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id`,
 		ne.ProjectID, ne.FileID, ne.FileName, ne.VersionID, ne.Source, ne.DeploymentID, ne.TriggerID, actorID,
 		ne.StartedAt, ne.FinishedAt, durationMs, compileExit, compileStderr, runExit, runStderr,
-		boolToInt(timedOut), boolToInt(truncated), nullIfEmpty(errMsg))
+		timedOut, truncated, nullIfEmpty(errMsg)).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert ws execution: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("last insert id: %w", err)
 	}
 	return s.GetWSExecution(ctx, id)
 }
@@ -527,11 +488,10 @@ func scanWSExecution(row rowScanner) (*Execution, error) {
 	var fileID, versionID, deploymentID, triggerID, actorID, durationMs sql.NullInt64
 	var compileExit, runExit sql.NullInt64
 	var finishedAt, compileStderr, runStderr, errMsg sql.NullString
-	var timedOut, truncated int
 
 	if err := row.Scan(&e.ID, &e.ProjectID, &fileID, &e.FileName, &versionID, &e.Source, &deploymentID, &triggerID, &actorID,
 		&e.StartedAt, &finishedAt, &durationMs, &compileExit, &compileStderr, &runExit, &runStderr,
-		&timedOut, &truncated, &errMsg); err != nil {
+		&e.TimedOut, &e.Truncated, &errMsg); err != nil {
 		return nil, err
 	}
 	if fileID.Valid {
@@ -570,13 +530,11 @@ func scanWSExecution(row rowScanner) (*Execution, error) {
 	e.CompileStderr = compileStderr.String
 	e.RunStderr = runStderr.String
 	e.Error = errMsg.String
-	e.TimedOut = timedOut != 0
-	e.Truncated = truncated != 0
 	return &e, nil
 }
 
 func (s *Store) GetWSExecution(ctx context.Context, id int64) (*Execution, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+wsExecutionColumns+` FROM ws_executions WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+wsExecutionColumns+` FROM ws_executions WHERE id = $1`, id)
 	return scanWSExecution(row)
 }
 
@@ -588,11 +546,11 @@ func (s *Store) ListWSExecutions(ctx context.Context, projectID int64, limit int
 	var err error
 	if beforeID > 0 {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+wsExecutionColumns+` FROM ws_executions WHERE project_id = ? AND id < ? ORDER BY id DESC LIMIT ?`,
+			`SELECT `+wsExecutionColumns+` FROM ws_executions WHERE project_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`,
 			projectID, beforeID, limit)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+wsExecutionColumns+` FROM ws_executions WHERE project_id = ? ORDER BY id DESC LIMIT ?`,
+			`SELECT `+wsExecutionColumns+` FROM ws_executions WHERE project_id = $1 ORDER BY id DESC LIMIT $2`,
 			projectID, limit)
 	}
 	if err != nil {
@@ -617,7 +575,7 @@ func (s *Store) PruneWSExecutions(ctx context.Context, keepPerProject int) (int6
 			SELECT id FROM (
 				SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY id DESC) AS rn
 				FROM ws_executions
-			) WHERE rn > ?
+			) ranked WHERE rn > $1
 		)`, keepPerProject)
 	if err != nil {
 		return 0, fmt.Errorf("prune ws executions: %w", err)
@@ -630,7 +588,7 @@ func (s *Store) PruneWSExecutions(ctx context.Context, keepPerProject int) (int6
 func (s *Store) UpsertWSKV(ctx context.Context, projectID int64, key, value string, sourceExecutionID *int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO ws_kv_store (project_id, key, value, updated_at, source_execution_id)
-		VALUES (?, ?, ?, datetime('now'), ?)
+		VALUES ($1, $2, $3, now_utc(), $4)
 		ON CONFLICT(project_id, key) DO UPDATE SET
 			value = excluded.value,
 			updated_at = excluded.updated_at,
@@ -644,7 +602,7 @@ func (s *Store) UpsertWSKV(ctx context.Context, projectID int64, key, value stri
 
 func (s *Store) ListWSKV(ctx context.Context, projectID int64) ([]*KVEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT project_id, key, value, updated_at, source_execution_id FROM ws_kv_store WHERE project_id = ? ORDER BY key`,
+		`SELECT project_id, key, value, updated_at, source_execution_id FROM ws_kv_store WHERE project_id = $1 ORDER BY key`,
 		projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list ws kv: %w", err)
@@ -665,7 +623,7 @@ func (s *Store) ListWSKV(ctx context.Context, projectID int64) ([]*KVEntry, erro
 }
 
 func (s *Store) DeleteWSKV(ctx context.Context, projectID int64, key string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_kv_store WHERE project_id = ? AND key = ?`, projectID, key)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM ws_kv_store WHERE project_id = $1 AND key = $2`, projectID, key)
 	return err
 }
 
@@ -690,7 +648,7 @@ func (s *Store) ListWSAudit(ctx context.Context, limit int) ([]*AuditEntry, erro
 		FROM ws_executions e
 		LEFT JOIN ws_projects p ON p.id = e.project_id
 		LEFT JOIN users u ON u.id = e.actor_id
-		ORDER BY e.id DESC LIMIT ?`, limit)
+		ORDER BY e.id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list ws audit: %w", err)
 	}
@@ -702,10 +660,9 @@ func (s *Store) ListWSAudit(ctx context.Context, limit int) ([]*AuditEntry, erro
 		var fileID, versionID, deploymentID, triggerID, durationMs sql.NullInt64
 		var compileExit, runExit sql.NullInt64
 		var finishedAt, compileStderr, runStderr, errMsg sql.NullString
-		var timedOut, truncated int
 		if err := rows.Scan(&a.ID, &a.ProjectID, &fileID, &a.FileName, &versionID, &a.Source, &deploymentID, &triggerID, &a.ActorID,
 			&a.StartedAt, &finishedAt, &durationMs, &compileExit, &compileStderr, &runExit, &runStderr,
-			&timedOut, &truncated, &errMsg, &a.ProjectName, &a.ActorEmail); err != nil {
+			&a.TimedOut, &a.Truncated, &errMsg, &a.ProjectName, &a.ActorEmail); err != nil {
 			return nil, err
 		}
 		if fileID.Valid {
@@ -740,8 +697,6 @@ func (s *Store) ListWSAudit(ctx context.Context, limit int) ([]*AuditEntry, erro
 		a.CompileStderr = compileStderr.String
 		a.RunStderr = runStderr.String
 		a.Error = errMsg.String
-		a.TimedOut = timedOut != 0
-		a.Truncated = truncated != 0
 		out = append(out, a)
 	}
 	return out, rows.Err()

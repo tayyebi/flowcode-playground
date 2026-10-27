@@ -1,14 +1,27 @@
 # FlowCode Playground — no Dockerfile, no prebuilt image, no CI.
 #
-# The service is a plain `golang:1.26-alpine` base image. On every
-# `docker compose up -d` it runs scripts/docker-entrypoint.sh, which installs
-# the rest of the toolchain (a C compiler, git) and builds FlowCode and the
-# server — then execs the result. The whole repo is
-# bind-mounted at /src, so every cache (apk, FlowCode's git clone, Go's
-# module/build cache) and every build artifact lives on the
-# host under .buildcache/, and survives across deploys: `git pull` on the
-# host followed by `docker compose up -d` only rebuilds what changed, it
-# never redownloads dependencies from scratch.
+# Four services behind one TLS reverse proxy:
+#
+#   nginx        the only published ports (443 TLS + 80→301). Terminates
+#                TLS (self-signed cert generated on first boot into the
+#                git-ignored ./certs/, replaceable with real ones), serves
+#                /static/ straight from the repo's ./static dir (the Go
+#                binaries serve no static files), and routes /admin to the
+#                admin service, everything else to the playground.
+#   playground   the user-facing Go service (:8033, unpublished). Builds
+#                from source on every `up` via scripts/docker-entrypoint.sh
+#                "app" — FlowCode toolchain included.
+#   admin        the administration area (:8034, unpublished): its own OIDC
+#                client and login, gated on the administrators table. Builds
+#                via the same entrypoint with role "admin".
+#   postgres     the shared database (:5432, NEVER published, passwordless
+#                trust auth — safe only because it is unreachable from
+#                outside the compose network).
+#
+# The whole repo is bind-mounted at /src, so every cache (apk, FlowCode's
+# git clone, Go's module/build cache) and every build artifact lives on the
+# host under .buildcache/ and survives across deploys: `git pull` followed
+# by `docker compose up -d` only rebuilds what changed.
 #
 #   git pull
 #   docker compose up -d
@@ -19,44 +32,76 @@
 #
 #   FLOWCODE_REF=v0.1.0 docker compose up -d
 #
-# Authentication is OIDC (any discovery-based provider); the three OIDC
-# variables are the only application configuration in the environment.
-# Everything else — SMTP/IMAP credentials, the Loki push URL, quotas, run
-# limits — is managed by system administrators in the /admin area and stored
-# in the database. Promote the first admin manually:
+# Authentication is OIDC for both areas, with two SEPARATE clients at the
+# same (or different) provider. The OIDC variables are the only application
+# configuration in the environment; everything else — SMTP/IMAP credentials,
+# the Loki push URL, quotas, run limits — is managed by administrators in
+# the admin area at /admin and stored in PostgreSQL. Bootstrap the admin
+# allowlist on first boot:
 #
-#   sqlite3 data/playground.db "UPDATE users SET is_admin=1 WHERE email='you@example.com';"
+#   ADMIN_EMAILS=you@example.com docker compose up -d
+#
+# Self-signed certificates mean browsers show a warning on first visit;
+# drop a real fullchain.pem + privkey.pem into ./certs/ and restart the
+# nginx service to replace them.
 #
 # Optional: `docker compose -f docker-compose.override.yml up -d` adds a
-# local Loki for Logger.log (configure Logger → http://loki:3100 in /admin).
+# local Loki for Logger.log (configure Logger → http://loki-mock:3100 in
+# /admin).
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: flowcode-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: playground
+      POSTGRES_DB: playground
+      # Passwordless by design: port 5432 is NEVER published, so only
+      # containers on this private compose network can reach it.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U playground -d playground"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   playground:
     image: golang:1.26-alpine
     container_name: flowcode-playground
     restart: unless-stopped
     working_dir: /src
-    command: ["sh", "/src/scripts/docker-entrypoint.sh"]
+    command: ["sh", "/src/scripts/docker-entrypoint.sh", "app"]
 
-    # Only 8033 is ever published to the host. Everything else (the build
-    # toolchain, the compiled binaries, the caches) is internal to the
-    # container/bind mounts and never gets its own port.
-    ports:
-      - "8033:8033"
-
+    # Nothing is published — nginx is the only entry point. The internal
+    # listener on :8035 (admin→app reload pokes) is likewise compose-only.
     environment:
       PORT: "8033"
+      DATABASE_URL: "postgres://playground@postgres:5432/playground?sslmode=disable"
+      INTERNAL_ADDR: ":8035"
       FLOWCODE_REPO: "${FLOWCODE_REPO:-https://github.com/tayyebi/flowcode.git}"
       FLOWCODE_REF: "${FLOWCODE_REF:-main}"
       # --- the only app configuration in the environment: OIDC ---
       OIDC_ISSUER: "${OIDC_ISSUER:?set OIDC_ISSUER, e.g. https://auth.example.com/realms/main}"
       OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID}"
       OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET}"
-      # Defaults to http://<request-host>/api/auth/callback when unset.
+      # Defaults to https://<request-host>/api/auth/callback when unset
+      # (nginx terminates TLS and passes X-Forwarded-Proto).
       OIDC_REDIRECT_URL: "${OIDC_REDIRECT_URL:-}"
-      # Set to 1 only when a reverse proxy you control sets X-Forwarded-For.
-      # Otherwise any client can forge the header and get its own rate bucket.
-      TRUST_PROXY: "${TRUST_PROXY:-0}"
+      # nginx sets X-Forwarded-For; leave 1 so the deploy rate limiter
+      # buckets by the real client address.
+      TRUST_PROXY: "1"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
 
     volumes:
       # The whole repo. Source, build caches (.buildcache/), and build
@@ -67,9 +112,6 @@ services:
       # exists, so it has to be a real mount rather than living under
       # .buildcache/ like everything else the entrypoint script controls.
       - ./.buildcache/apk-cache:/etc/apk/cache
-      # Persistent SQLite database (users, workspaces, projects, executions,
-      # app calls, settings) — must survive restarts and rebuilds.
-      - ./data:/data
 
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8033/healthz"]
@@ -85,3 +127,103 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  admin:
+    image: golang:1.26-alpine
+    container_name: flowcode-admin
+    restart: unless-stopped
+    working_dir: /src
+    command: ["sh", "/src/scripts/docker-entrypoint.sh", "admin"]
+
+    environment:
+      PORT: "8034"
+      DATABASE_URL: "postgres://playground@postgres:5432/playground?sslmode=disable"
+      # The app's unpublished internal listener, for reload notifications
+      # after settings saves / service-token rotation.
+      APP_INTERNAL_URL: "http://playground:8035"
+      # First-boot allowlist seeding (only while the administrators table is
+      # empty); manage administrators in the admin UI afterwards.
+      ADMIN_EMAILS: "${ADMIN_EMAILS:-}"
+      # The administration area's OWN OIDC client — separate credentials
+      # from the user-facing one.
+      OIDC_ISSUER: "${OIDC_ISSUER:?}"
+      OIDC_CLIENT_ID: "${OIDC_ADMIN_CLIENT_ID:?set OIDC_ADMIN_CLIENT_ID (a separate client registration)}"
+      OIDC_CLIENT_SECRET: "${OIDC_ADMIN_CLIENT_SECRET:?set OIDC_ADMIN_CLIENT_SECRET}"
+      # Defaults to https://<request-host>/admin/api/auth/callback when unset.
+      OIDC_REDIRECT_URL: "${OIDC_ADMIN_REDIRECT_URL:-}"
+      TRUST_PROXY: "1"
+
+    # Waiting for the playground's healthcheck keeps the two binaries from
+    # racing through first-boot migrations on a fresh database.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      playground:
+        condition: service_healthy
+
+    volumes:
+      - .:/src
+      - ./.buildcache/apk-cache:/etc/apk/cache
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8034/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      # Builds only the admin binary — no FlowCode toolchain — but still
+      # give a cold module cache some slack.
+      start_period: 120s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:alpine
+    container_name: flowcode-nginx
+    restart: unless-stopped
+    # The image entrypoint execs our script, which generates the self-signed
+    # certificate on first boot (persisted on the host) and then execs nginx.
+    command: ["sh", "/nginx-entrypoint.sh"]
+
+    # The only published ports. Override the host side if 80/443 are taken.
+    ports:
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTP_PORT:-80}:80"
+
+    environment:
+      # Certificate subject/SANs for the self-signed first-boot pair; a
+      # real certificate in ./certs/ wins over all of these.
+      CERT_CN: "${CERT_CN:-localhost}"
+      CERT_DNS: "${CERT_DNS:-}"
+      CERT_IP: "${CERT_IP:-}"
+
+    volumes:
+      - ./conf/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./scripts/nginx-entrypoint.sh:/nginx-entrypoint.sh:ro
+      # The single source of truth for UI assets — served by nginx alone.
+      - ./static:/srv/static:ro
+      # TLS certificates: git-ignored, persistent, replaceable.
+      - ./certs:/certs
+
+    depends_on:
+      - playground
+      - admin
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-check-certificate", "-qO-", "https://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres-data:

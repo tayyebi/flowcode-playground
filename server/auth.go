@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -39,9 +40,12 @@ type auth struct {
 }
 
 func newAuth(ctx context.Context, issuer, clientID, clientSecret, redirect string) (*auth, error) {
-	provider, err := oidc.NewProvider(ctx, issuer)
+	// Retry discovery: on a cold compose boot the IdP (or the sidecar that
+	// makes it reachable as "localhost") may not be listening yet, and a
+	// startup error here crash-loops the service.
+	provider, err := newProviderWithRetry(ctx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery against %s: %w", issuer, err)
+		return nil, err
 	}
 	return &auth{
 		provider: provider,
@@ -56,13 +60,40 @@ func newAuth(ctx context.Context, issuer, clientID, clientSecret, redirect strin
 	}, nil
 }
 
-func (a *auth) callbackURL(r *http.Request) string {
-	if a.redirect != "" {
-		return a.redirect
+func newProviderWithRetry(ctx context.Context, issuer string) (*oidc.Provider, error) {
+	var lastErr error
+	for attempt := 0; attempt < 30; attempt++ {
+		provider, err := oidc.NewProvider(ctx, issuer)
+		if err == nil {
+			return provider, nil
+		}
+		lastErr = fmt.Errorf("OIDC discovery against %s: %w", issuer, err)
+		log.Printf("%v — retrying in 2s (%d/30)", lastErr, attempt+1)
+		select {
+		case <-ctx.Done():
+			return nil, lastErr
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return nil, lastErr
+}
+
+// callbackURL builds the OIDC redirect URI from the request host. TLS
+// terminates at nginx, so behind a trusted proxy (TRUST_PROXY=1) the scheme
+// comes from X-Forwarded-Proto rather than the plain connection this
+// process actually sees.
+func (s *Server) callbackURL(r *http.Request) string {
+	if s.auth.redirect != "" {
+		return s.auth.redirect
 	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
+	}
+	if s.TrustProxy {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			scheme = proto
+		}
 	}
 	return scheme + "://" + r.Host + "/api/auth/callback"
 }
@@ -81,7 +112,7 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, s.auth.oauth.AuthCodeURL(state, oauth2.SetAuthURLParam("redirect_uri", s.auth.callbackURL(r))), http.StatusSeeOther)
+	http.Redirect(w, r, s.auth.oauth.AuthCodeURL(state, oauth2.SetAuthURLParam("redirect_uri", s.callbackURL(r))), http.StatusSeeOther)
 }
 
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +130,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: stateCookieName, Value: "", Path: "/", MaxAge: -1})
 
 	ctx := r.Context()
-	tok, err := s.auth.oauth.Exchange(ctx, q.Get("code"), oauth2.SetAuthURLParam("redirect_uri", s.auth.callbackURL(r)))
+	tok, err := s.auth.oauth.Exchange(ctx, q.Get("code"), oauth2.SetAuthURLParam("redirect_uri", s.callbackURL(r)))
 	if err != nil {
 		http.Redirect(w, r, "/login?err="+queryEscape("token exchange failed"), http.StatusSeeOther)
 		return
@@ -237,28 +268,24 @@ func (s *Server) userFromSession(r *http.Request) (*store.User, bool) {
 }
 
 func (s *Server) userFromServiceToken(r *http.Request) *store.User {
+	tok := s.serviceToken.Load()
+	if tok == nil || *tok == "" {
+		return nil
+	}
 	h := r.Header.Get("Authorization")
-	if len(h) <= 7 || h[:7] != "Bearer " || s.serviceToken == "" {
+	if len(h) <= 7 || h[:7] != "Bearer " {
 		return nil
 	}
-	if !hmac.Equal([]byte(h[7:]), []byte(s.serviceToken)) {
+	if !hmac.Equal([]byte(h[7:]), []byte(*tok)) {
 		return nil
 	}
-	// The service token acts as the first admin — it exists before any user
-	// has been promoted. Look up any admin, else any user, else give up.
-	admins, err := s.store.ListUsers(r.Context())
-	if err != nil {
+	// The service token acts as the first user — it exists before anyone
+	// has logged in, and scripts / smoke tests need a principal.
+	users, err := s.store.ListUsers(r.Context())
+	if err != nil || len(users) == 0 {
 		return nil
 	}
-	for _, u := range admins {
-		if u.IsAdmin {
-			return u
-		}
-	}
-	if len(admins) > 0 {
-		return admins[0]
-	}
-	return nil
+	return users[0]
 }
 
 /* ------------------------------------------------------------------ */
@@ -283,28 +310,6 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		writeError(w, http.StatusUnauthorized, "login required")
-	}
-}
-
-// requireAdminPage / requireAdmin gate the system administration area on
-// the manually-promoted is_admin flag.
-func (s *Server) requireAdminPage(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if u := s.currentUser(r); u != nil && u.IsAdmin {
-			next(w, r)
-			return
-		}
-		http.Redirect(w, r, "/projects?err="+queryEscape("system administrators only"), http.StatusSeeOther)
-	}
-}
-
-func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if u := s.currentUser(r); u != nil && u.IsAdmin {
-			next(w, r)
-			return
-		}
-		writeError(w, http.StatusForbidden, "system administrators only")
 	}
 }
 

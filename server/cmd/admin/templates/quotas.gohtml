@@ -1,4 +1,4 @@
-{{template "admin-top.gohtml" .}}
+{{template "top.gohtml" .}}
 
 <h1>Rate limits — {{.App}} app</h1>
 <p class="note">Default: {{.Default}} calls/minute per user. A per-user override wins when
@@ -15,7 +15,7 @@ present; unchecking "enabled" disables the app for that user entirely.</p>
   <tbody>
     {{range .Rows}}
     <tr>
-      <td>{{.User.Email}} {{if .User.IsAdmin}}<span class="tag">admin</span>{{end}}</td>
+      <td>{{.User.Email}}</td>
       <td>
         {{with .Quota}}{{.CallsPerMinute}}/min{{if not .Enabled}} · disabled{{end}}{{else}}<span class="muted">default</span>{{end}}
       </td>
@@ -40,4 +40,4 @@ present; unchecking "enabled" disables the app for that user entirely.</p>
   </tbody>
 </table>
 
-{{template "admin-bottom.gohtml" .}}
+{{template "bottom.gohtml" .}}

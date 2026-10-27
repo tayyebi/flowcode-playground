@@ -11,8 +11,7 @@
     <nav class="topnav">
       <a href="/admin" class="topnav-brand">Administration</a>
       <span class="spacer"></span>
-      <a href="/projects" class="btn btn-ghost btn-small">Back to projects</a>
-      <form method="post" action="/logout" class="inline-form">
+      <form method="post" action="/admin/logout" class="inline-form">
         <button type="submit" class="btn btn-ghost">Log out</button>
       </form>
     </nav>
@@ -22,7 +21,7 @@
         <h3>Mail app</h3>
         <a href="/admin/mail" class="{{if eq .Section "mail"}}active{{end}}">Configuration</a>
         <a href="/admin/mail/logs" class="{{if eq .Section "mail"}}active{{end}}">Logs</a>
-        <a href="/admin/quotas?app=mail" class="{{if and (eq .Section "mail") false}}x{{end}}">Rate limits</a>
+        <a href="/admin/quotas?app=mail">Rate limits</a>
 
         <h3>HTTP app</h3>
         <a href="/admin/http" class="{{if eq .Section "http"}}active{{end}}">Configuration</a>
@@ -37,6 +36,7 @@
         <h3>System</h3>
         <a href="/admin/users" class="{{if eq .Section "system"}}active{{end}}">Users</a>
         <a href="/admin/executions" class="{{if eq .Section "system"}}active{{end}}">Executions</a>
+        <a href="/admin/administrators" class="{{if eq .Section "system"}}active{{end}}">Administrators</a>
         <a href="/admin/general" class="{{if eq .Section "system"}}active{{end}}">General</a>
       </aside>
       <section class="admin-content">

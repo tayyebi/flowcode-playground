@@ -1,15 +1,17 @@
-// Package store is typed CRUD over the platform's SQLite schema, one file
-// per entity (projects, files, versions, deployments, triggers, executions,
-// kv). It holds no HTTP or execution logic — that lives in package main's
-// handler files and package engine, respectively.
+// Package store is typed CRUD over the platform's PostgreSQL schema, one
+// file per entity (users/workspaces, content, settings, administrators). It
+// holds no HTTP or execution logic — that lives in the binaries' handler
+// files and package engine, respectively.
 package store
 
 import (
 	"database/sql"
-	"strings"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Store is typed CRUD over the platform's SQLite database.
+// Store is typed CRUD over the platform's PostgreSQL database.
 type Store struct {
 	db *sql.DB
 }
@@ -19,12 +21,17 @@ func New(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
-// isUniqueViolation reports whether err is a SQLite UNIQUE constraint
-// failure. modernc.org/sqlite doesn't export a stable error-code type across
-// versions worth depending on here, so this matches on the driver's message
-// text, which has been stable across SQLite's own releases for over a decade.
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// isUniqueViolation reports whether err is a PostgreSQL unique-constraint
+// failure (SQLSTATE 23505), e.g. a slug collision the caller wants to retry
+// with a different suffix.
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // ErrNotFound is returned by Get-style lookups when no row matches.

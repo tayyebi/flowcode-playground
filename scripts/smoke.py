@@ -3,9 +3,12 @@
 
 Authentication is OIDC for humans; this script uses the instance's service
 token (the internal `__service_token` setting) with `Authorization: Bearer`.
-Point it at a running instance and its database:
+Point it at the nginx front of a running compose stack (TLS is self-signed,
+so the certificate is not verified); the token is read from the postgres
+container:
 
-    python3 scripts/smoke.py http://localhost:8033 data/playground.db
+    python3 scripts/smoke.py                       # https://localhost, flowcode-postgres
+    python3 scripts/smoke.py https://example.com   # custom base URL
 
 Checks: health, login redirect, auth rejection without a token, then the
 project surface through the JSON API — create project, save + run a workflow
@@ -18,7 +21,8 @@ response.
 from __future__ import annotations
 
 import json
-import sqlite3
+import ssl
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -36,6 +40,11 @@ class Fail(Exception):
     pass
 
 
+# The stack's front certificate is self-signed by design.
+_OPENER = urllib.request.build_opener(
+    urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+
+
 def req(base: str, method: str, path: str, token: str | None = None,
         body: dict | None = None, *, raw: bool = False):
     data = json.dumps(body).encode() if body is not None else None
@@ -44,7 +53,7 @@ def req(base: str, method: str, path: str, token: str | None = None,
         headers["Authorization"] = f"Bearer {token}"
     r = urllib.request.Request(f"{base}{path}", data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(r) as resp:
+        with _OPENER.open(r) as resp:
             payload = resp.read()
             if raw:
                 return resp.status, payload.decode(errors="replace")
@@ -65,25 +74,26 @@ def expect(cond: bool, what: str, detail=None):
     print(f"  ok: {what}")
 
 
-def service_token(db_path: str) -> str:
-    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+def service_token(container: str) -> str:
     try:
-        row = con.execute(
-            "SELECT value FROM system_settings WHERE key = '__service_token'"
-        ).fetchone()
-    finally:
-        con.close()
-    if not row:
-        raise Fail("no __service_token in the database — boot the server once first")
-    return row[0]
+        tok = subprocess.run(
+            ["docker", "exec", container, "psql", "-U", "playground", "-d",
+             "playground", "-tA", "-c",
+             "SELECT value FROM system_settings WHERE key = '__service_token'"],
+            capture_output=True, text=True, check=True).stdout.strip()
+    except subprocess.CalledProcessError as e:
+        raise Fail(f"could not read the service token from {container}: {e.stderr.strip()}")
+    if not tok:
+        raise Fail("no __service_token in the database — boot the stack once first")
+    return tok
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
+    if len(sys.argv) > 2:
         print(__doc__)
         return 2
-    base, db_path = sys.argv[1].rstrip("/"), sys.argv[2]
-    token = service_token(db_path)
+    base = (sys.argv[1] if len(sys.argv) == 2 else "https://localhost").rstrip("/")
+    token = service_token("flowcode-postgres")
 
     print("health & auth gates")
     status, body = req(base, "GET", "/healthz")
@@ -93,7 +103,8 @@ def main() -> int:
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
 
-    no_follow = urllib.request.build_opener(NoRedirect)
+    no_follow = urllib.request.build_opener(NoRedirect,
+        urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
     try:
         with no_follow.open(f"{base}/projects") as resp:
             raise Fail(f"/projects unauthenticated returned {resp.status}, expected redirect")

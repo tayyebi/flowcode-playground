@@ -20,15 +20,14 @@ const (
 )
 
 // User is an OIDC-authenticated identity, upserted on every login keyed by
-// the provider's `sub` claim. IsAdmin is promoted manually from the database
-// (UPDATE users SET is_admin = 1 WHERE email = '…'); there is no promote UI.
+// the provider's `sub` claim. Platform administrators are NOT flagged users:
+// they live in the separate administrators table.
 type User struct {
 	ID          int64  `json:"id"`
 	Subject     string `json:"subject"`
 	Email       string `json:"email"`
 	Name        string `json:"name"`
 	Picture     string `json:"picture"`
-	IsAdmin     bool   `json:"isAdmin"`
 	CreatedAt   string `json:"createdAt"`
 	LastLoginAt string `json:"lastLoginAt,omitempty"`
 }
@@ -63,15 +62,13 @@ type ProjectShare struct {
 	Name      string `json:"name"`
 }
 
-const userColumns = "id, subject, email, name, picture, is_admin, created_at, COALESCE(last_login_at, '')"
+const userColumns = "id, subject, email, name, picture, created_at, COALESCE(last_login_at, '')"
 
 func scanUser(row rowScanner) (*User, error) {
 	var u User
-	var isAdmin int
-	if err := row.Scan(&u.ID, &u.Subject, &u.Email, &u.Name, &u.Picture, &isAdmin, &u.CreatedAt, &u.LastLoginAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Subject, &u.Email, &u.Name, &u.Picture, &u.CreatedAt, &u.LastLoginAt); err != nil {
 		return nil, err
 	}
-	u.IsAdmin = isAdmin != 0
 	return &u, nil
 }
 
@@ -102,12 +99,12 @@ func (s *Store) UpsertUserBySubject(ctx context.Context, subject, email, name, p
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO users (subject, email, name, picture, last_login_at)
-		VALUES (?, ?, ?, ?, datetime('now'))
+		VALUES ($1, $2, $3, $4, now_utc())
 		ON CONFLICT(subject) DO UPDATE SET
 			email = CASE WHEN excluded.email != '' THEN excluded.email ELSE users.email END,
 			name = CASE WHEN excluded.name != '' THEN excluded.name ELSE users.name END,
 			picture = CASE WHEN excluded.picture != '' THEN excluded.picture ELSE users.picture END,
-			last_login_at = datetime('now')`,
+			last_login_at = now_utc()`,
 		subject, email, name, picture)
 	if err != nil {
 		return nil, fmt.Errorf("upsert user: %w", err)
@@ -116,12 +113,12 @@ func (s *Store) UpsertUserBySubject(ctx context.Context, subject, email, name, p
 }
 
 func (s *Store) GetUserBySubject(ctx context.Context, subject string) (*User, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE subject = ?`, subject)
+	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE subject = $1`, subject)
 	return scanUser(row)
 }
 
 func (s *Store) GetUser(ctx context.Context, id int64) (*User, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = $1`, id)
 	return scanUser(row)
 }
 
@@ -148,16 +145,14 @@ func (s *Store) CreateWorkspace(ctx context.Context, name string) (*Workspace, e
 		if attempt > 0 {
 			slug = fmt.Sprintf("%s-%d", base, attempt+1)
 		}
-		res, err := s.db.ExecContext(ctx, `INSERT INTO workspaces (slug, name) VALUES (?, ?)`, slug, name)
+		var id int64
+		err := s.db.QueryRowContext(ctx,
+			`INSERT INTO workspaces (slug, name) VALUES ($1, $2) RETURNING id`, slug, name).Scan(&id)
 		if err != nil {
 			if isUniqueViolation(err) {
 				continue
 			}
 			return nil, fmt.Errorf("insert workspace: %w", err)
-		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, fmt.Errorf("last insert id: %w", err)
 		}
 		return s.GetWorkspace(ctx, id)
 	}
@@ -165,12 +160,12 @@ func (s *Store) CreateWorkspace(ctx context.Context, name string) (*Workspace, e
 }
 
 func (s *Store) GetWorkspace(ctx context.Context, id int64) (*Workspace, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+workspaceColumns+` FROM workspaces WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+workspaceColumns+` FROM workspaces WHERE id = $1`, id)
 	return scanWorkspace(row)
 }
 
 func (s *Store) GetWorkspaceBySlug(ctx context.Context, slug string) (*Workspace, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+workspaceColumns+` FROM workspaces WHERE slug = ?`, slug)
+	row := s.db.QueryRowContext(ctx, `SELECT `+workspaceColumns+` FROM workspaces WHERE slug = $1`, slug)
 	return scanWorkspace(row)
 }
 
@@ -178,7 +173,7 @@ func (s *Store) ListWorkspacesForUser(ctx context.Context, userID int64) ([]*Wor
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+stringComma(workspaceColumns, "w.")+`
 		FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id
-		WHERE m.user_id = ? ORDER BY w.name`, userID)
+		WHERE m.user_id = $1 ORDER BY w.name`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
@@ -196,22 +191,20 @@ func (s *Store) ListWorkspacesForUser(ctx context.Context, userID int64) ([]*Wor
 }
 
 func (s *Store) DeleteWorkspace(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM workspaces WHERE id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM workspaces WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete workspace: %w", err)
 	}
 	return nil
 }
 
-// AddWorkspaceMember inserts or updates a member's role. SQLite has no
-// CHECK-aware upsert shortcut that reads naturally here, so delete-then-
-// insert inside one statement pair via INSERT OR REPLACE.
+// AddWorkspaceMember inserts or updates a member's role.
 func (s *Store) AddWorkspaceMember(ctx context.Context, workspaceID, userID int64, role Role) error {
 	if !validWorkspaceRole(role) {
 		return fmt.Errorf("invalid workspace role %q", role)
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)
+		INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3)
 		ON CONFLICT(workspace_id, user_id) DO UPDATE SET role = excluded.role`,
 		workspaceID, userID, role)
 	if err != nil {
@@ -222,16 +215,14 @@ func (s *Store) AddWorkspaceMember(ctx context.Context, workspaceID, userID int6
 
 func (s *Store) RemoveWorkspaceMember(ctx context.Context, workspaceID, userID int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`, workspaceID, userID)
+		`DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`, workspaceID, userID)
 	return err
 }
-
-// LastOwnerError sentinel-ish check helpers ---------------------------------
 
 func (s *Store) GetWorkspaceRole(ctx context.Context, workspaceID, userID int64) (Role, error) {
 	var role string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`,
+		`SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`,
 		workspaceID, userID).Scan(&role)
 	if err != nil {
 		return "", err
@@ -242,7 +233,7 @@ func (s *Store) GetWorkspaceRole(ctx context.Context, workspaceID, userID int64)
 func (s *Store) CountWorkspaceOwners(ctx context.Context, workspaceID int64) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND role = 'owner'`,
+		`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = $1 AND role = 'owner'`,
 		workspaceID).Scan(&n)
 	return n, err
 }
@@ -251,7 +242,7 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, workspaceID int64) ([]
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.workspace_id, m.user_id, m.role, u.email, u.name, u.picture
 		FROM workspace_members m JOIN users u ON u.id = m.user_id
-		WHERE m.workspace_id = ?
+		WHERE m.workspace_id = $1
 		ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, u.name`,
 		workspaceID)
 	if err != nil {
@@ -276,7 +267,7 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, workspaceID int64) ([]
 // insensitively, for invite-by-email. Returns ErrNotFound when absent.
 func (s *Store) FindUserByEmailExact(ctx context.Context, email string) (*User, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+userColumns+` FROM users WHERE lower(email) = lower(?) AND email != ''`, email)
+		`SELECT `+userColumns+` FROM users WHERE lower(email) = lower($1) AND email != ''`, email)
 	return scanUser(row)
 }
 
@@ -290,7 +281,7 @@ func (s *Store) UpsertProjectShare(ctx context.Context, projectID, userID int64,
 		return fmt.Errorf("invalid project share role %q", role)
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO project_shares (project_id, user_id, role, granted_by) VALUES (?, ?, ?, ?)
+		INSERT INTO project_shares (project_id, user_id, role, granted_by) VALUES ($1, $2, $3, $4)
 		ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role, granted_by = excluded.granted_by`,
 		projectID, userID, role, grantedBy)
 	if err != nil {
@@ -301,7 +292,7 @@ func (s *Store) UpsertProjectShare(ctx context.Context, projectID, userID int64,
 
 func (s *Store) DeleteProjectShare(ctx context.Context, projectID, userID int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM project_shares WHERE project_id = ? AND user_id = ?`, projectID, userID)
+		`DELETE FROM project_shares WHERE project_id = $1 AND user_id = $2`, projectID, userID)
 	return err
 }
 
@@ -309,7 +300,7 @@ func (s *Store) ListProjectShares(ctx context.Context, projectID int64) ([]*Proj
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.project_id, s.user_id, s.role, u.email, u.name
 		FROM project_shares s JOIN users u ON u.id = s.user_id
-		WHERE s.project_id = ? ORDER BY u.name`, projectID)
+		WHERE s.project_id = $1 ORDER BY u.name`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list shares: %w", err)
 	}
@@ -339,13 +330,13 @@ func (s *Store) ListProjectShares(ctx context.Context, projectID int64) ([]*Proj
 // sharing stays inside the workspace boundary.
 func (s *Store) EffectiveProjectRole(ctx context.Context, projectID, userID int64) (Role, error) {
 	var wsID int64
-	err := s.db.QueryRowContext(ctx, `SELECT workspace_id FROM ws_projects WHERE id = ?`, projectID).Scan(&wsID)
+	err := s.db.QueryRowContext(ctx, `SELECT workspace_id FROM ws_projects WHERE id = $1`, projectID).Scan(&wsID)
 	if err != nil {
 		return "", err // ErrNotFound if the project doesn't exist
 	}
 	var wsRole string
 	err = s.db.QueryRowContext(ctx,
-		`SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`, wsID, userID).Scan(&wsRole)
+		`SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`, wsID, userID).Scan(&wsRole)
 	if err == ErrNotFound {
 		return "", nil
 	}
@@ -355,7 +346,7 @@ func (s *Store) EffectiveProjectRole(ctx context.Context, projectID, userID int6
 
 	var shareRole string
 	err = s.db.QueryRowContext(ctx,
-		`SELECT role FROM project_shares WHERE project_id = ? AND user_id = ?`, projectID, userID).Scan(&shareRole)
+		`SELECT role FROM project_shares WHERE project_id = $1 AND user_id = $2`, projectID, userID).Scan(&shareRole)
 	if err == nil {
 		return Role(shareRole), nil
 	}
@@ -381,8 +372,8 @@ func (s *Store) ListProjectsForUser(ctx context.Context, userID int64) ([]*Proje
 		       COALESCE(s.role, CASE m.role WHEN 'owner' THEN 'owner' WHEN 'admin' THEN 'owner' ELSE 'editor' END)
 		FROM ws_projects p
 		JOIN workspaces w ON w.id = p.workspace_id
-		JOIN workspace_members m ON m.workspace_id = p.workspace_id AND m.user_id = ?
-		LEFT JOIN project_shares s ON s.project_id = p.id AND s.user_id = ?
+		JOIN workspace_members m ON m.workspace_id = p.workspace_id AND m.user_id = $1
+		LEFT JOIN project_shares s ON s.project_id = p.id AND s.user_id = $2
 		ORDER BY p.updated_at DESC`, userID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list projects for user: %w", err)
@@ -420,17 +411,6 @@ func validWorkspaceRole(r Role) bool {
 
 // stringComma prefixes each column of a comma-separated list, for joins.
 func stringComma(cols, prefix string) string {
-	out := make([]byte, 0, len(cols)+len(prefix))
-	for i := 0; i < len(cols); i++ {
-		c := cols[i]
-		if c == ' ' || c == ',' {
-			continue
-		}
-		// rebuild: split on ", " boundaries crudely — columns lists use ", "
-		out = append(out, c)
-	}
-	_ = out
-	// Simpler and unambiguous: manual split.
 	var b []byte
 	start := 0
 	src := cols

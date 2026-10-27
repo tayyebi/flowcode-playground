@@ -8,9 +8,10 @@ import (
 )
 
 // resolveWSProject loads the {id} project and the current user's effective
-// role. System administrators (is_admin) act as owners everywhere; everyone
-// else needs workspace membership or a share. The returned status is 404 —
-// not 403 — for foreign projects, so ids are not enumerable.
+// role. Access needs workspace membership or a share — platform
+// administrators are a separate identity (own table, own login) and have no
+// user-side powers. The returned status is 404 — not 403 — for foreign
+// projects, so ids are not enumerable.
 func (s *Server) resolveWSProject(r *http.Request) (*store.WSProject, store.Role, *store.User, int, string) {
 	user := s.currentUser(r)
 	if user == nil {
@@ -27,17 +28,12 @@ func (s *Server) resolveWSProject(r *http.Request) (*store.WSProject, store.Role
 	if gerr != nil {
 		return nil, "", user, http.StatusInternalServerError, "could not look up project"
 	}
-	role := store.RoleViewer
-	if user.IsAdmin {
-		role = store.RoleOwner
-	} else {
-		role, err = s.store.EffectiveProjectRole(r.Context(), p.ID, user.ID)
-		if err != nil {
-			return nil, "", user, http.StatusInternalServerError, "could not resolve access"
-		}
-		if role == "" {
-			return nil, "", user, http.StatusNotFound, "project not found"
-		}
+	role, err := s.store.EffectiveProjectRole(r.Context(), p.ID, user.ID)
+	if err != nil {
+		return nil, "", user, http.StatusInternalServerError, "could not resolve access"
+	}
+	if role == "" {
+		return nil, "", user, http.StatusNotFound, "project not found"
 	}
 	return p, role, user, 0, ""
 }

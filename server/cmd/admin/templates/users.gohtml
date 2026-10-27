@@ -1,0 +1,21 @@
+{{template "top.gohtml" .}}
+
+<h1>Users</h1>
+<p class="note">Platform users, read-only. Administrators are a separate identity —
+see <a href="/admin/administrators">Administrators</a>.</p>
+
+<table class="list">
+  <thead><tr><th>Email</th><th>Name</th><th>First seen</th><th>Last login</th></tr></thead>
+  <tbody>
+    {{range .Users}}
+    <tr>
+      <td>{{.Email}}</td>
+      <td>{{.Name}}</td>
+      <td class="muted">{{.CreatedAt}}</td>
+      <td class="muted">{{.LastLoginAt}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+
+{{template "bottom.gohtml" .}}
