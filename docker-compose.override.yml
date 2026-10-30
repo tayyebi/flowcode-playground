@@ -1,15 +1,7 @@
 # Throw-away local test rig. Compose merges this file automatically on plain
 # `docker compose up` when it is present; without it, nothing changes.
 #
-# One self-built mock remains (throw-away/), with a web GUI and a single
-# JSON file as its database (under throw-away/data/):
-#
-#   oidc-mock      a complete mock OIDC provider — full code flow with real
-#                  RS256-signed ID tokens, GUI at http://localhost:9400
-#                  (identity picker on login, identity manager, login log).
-#                  It accepts any client_id/secret, so the admin area's
-#                  second client needs no extra registration.
-#
+# The one piece of local scaffolding left: an IdP for the OIDC logins.
 # Everything else that used to be mocked is now real and bundled in the base
 # file: mail goes out through the send-only `mailer` relay (configure the
 # Mail app with just the toggle + sender address; test sends are REAL mail
@@ -18,93 +10,115 @@
 # pushes to the bundled no-auth `loki` service (configure the Logger app
 # with just the toggle).
 #
+#   idaas         the OIDC provider (ghcr.io/tayyebi/idaas) — real password
+#                 logins, RS256 ID tokens, and NO published port of its own:
+#                 nginx fronts it at https://localhost:9443 with the same
+#                 self-signed certificate as the main site (the Go backends
+#                 trust it via SSL_CERT_FILE). OIDC clients are registered in
+#                 throw-away/data/idaas/clients.conf; accounts are created via
+#                 the /api/users admin endpoint, which only answers to the
+#                 internal private ranges below AND requires the bearer token
+#                 — it is unreachable from outside the compose network.
 #   oidc-localhost-bridge / admin-oidc-localhost-bridge
-#                  the issuer is http://localhost:9400, which the browser
-#                  reaches via the published port — but each Go container
-#                  would resolve "localhost" to itself. One socat sidecar
-#                  per service shares its network namespace and forwards
-#                  its localhost:9400 to the mock, so one issuer string
-#                  works for browser and backend alike.
+#                 the issuer is https://localhost:9443, which the browser
+#                 reaches through nginx — but each Go container would resolve
+#                 "localhost" to itself. One socat sidecar per service shares
+#                 its network namespace and forwards its localhost:9443 to
+#                 nginx, so one issuer string works for browser and backend
+#                 alike.
 #
 # The base compose file still interpolates ${OIDC_ISSUER:?} and friends at
 # parse time, so create a `.env` next to it (or export the vars) before
 # `up`:
 #
 #   cat > .env <<'EOF'
-#   OIDC_ISSUER=http://localhost:9400
+#   OIDC_ISSUER=https://localhost:9443
 #   OIDC_CLIENT_ID=playground
 #   OIDC_CLIENT_SECRET=mock-secret
 #   OIDC_ADMIN_CLIENT_ID=playground-admin
 #   OIDC_ADMIN_CLIENT_SECRET=mock-secret
 #   ADMIN_EMAILS=admin@example.com
 #   MAIL_NAME=mail.localhost
-#   # ports 80/443 are the defaults; remap if your machine has them taken:
+#   # ports 80/443/9443 are the defaults; remap if your machine has them
+#   # taken (HTTPS_PORT/HTTP_PORT in the base file, 9443 in nginx below):
 #   # HTTPS_PORT=8443
 #   # HTTP_PORT=8080
 #   EOF
 #
-# Then sign in at https://localhost (accept the self-signed certificate)
-# and pick an identity. The administration area lives at
-# https://localhost/admin — sign in there with the allowlisted
-# admin@example.com identity from the mock's picker.
-
-x-mock-base: &mock-base
-  image: golang:1.26-alpine
-  restart: unless-stopped
-  volumes:
-    - .:/src:ro
-    - ./.buildcache/go:/go
-    - ./.buildcache/go-build:/.cache/go-build
-    - ./throw-away/data:/data
-  logging:
-    driver: json-file
-    options:
-      max-size: "5m"
-      max-file: "2"
+# IdP accounts are NOT configured here — create them once through the admin
+# API (curl examples in throw-away/README.md), then sign in at
+# https://localhost with a real username + password. The administration area
+# lives at https://localhost/admin — sign in there with the allowlisted
+# admin@example.com account.
 
 services:
   playground:
     depends_on:
-      - oidc-mock
+      - idaas
     environment:
-      OIDC_ISSUER: "http://localhost:9400"
+      OIDC_ISSUER: "https://localhost:9443"
       OIDC_CLIENT_ID: "playground"
       OIDC_CLIENT_SECRET: "mock-secret"
       OIDC_REDIRECT_URL: "https://localhost/api/auth/callback"
+      # Trust the rig's self-signed certificate on the issuer connection.
+      SSL_CERT_FILE: "/certs/fullchain.pem"
+    volumes:
+      - ./data/certs:/certs:ro
 
   admin:
     depends_on:
-      - oidc-mock
+      - idaas
     environment:
-      OIDC_ISSUER: "http://localhost:9400"
+      OIDC_ISSUER: "https://localhost:9443"
       OIDC_CLIENT_ID: "playground-admin"
       OIDC_CLIENT_SECRET: "mock-secret"
       OIDC_REDIRECT_URL: "https://localhost/admin/api/auth/callback"
       ADMIN_EMAILS: "admin@example.com"
+      SSL_CERT_FILE: "/certs/fullchain.pem"
+    volumes:
+      - ./data/certs:/certs:ro
 
-  oidc-mock:
-    <<: *mock-base
-    container_name: flowcode-oidc-mock
-    working_dir: /src/throw-away/oidc-mock
-    command: ["sh", "-c", "exec go run ."]
-    environment:
-      ISSUER: "http://localhost:9400"
-      LISTEN: ":9400"
-      DB: "/data/oidc-mock.json"
+  nginx:
+    depends_on:
+      - playground
+      - admin
+      - idaas
     ports:
-      - "9400:9400"
+      - "9443:9443"
 
-  # The playground's view of the mock: localhost:9400 inside its own network
-  # namespace, forwarded to the mock over the compose network's DNS.
+  idaas:
+    image: ghcr.io/tayyebi/idaas:latest
+    container_name: flowcode-idaas
+    restart: unless-stopped
+    environment:
+      IDAAS_ISSUER: "https://localhost:9443"
+      IDAAS_LISTEN: ":8080"
+      IDAAS_DATA_DIR: "/data"
+      # The admin API (/api/users) only answers to internal private
+      # addresses — the service has no published port, so every request
+      # arrives from the compose network via nginx — and then only with the
+      # bearer token. Unset would disable the API entirely (403).
+      IDAAS_ADMIN_NETWORKS: "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      IDAAS_ADMIN_TOKEN: "d7dd21c5da8adf4ec1eae556fd678b3005cfdc07124e2f4a"
+    volumes:
+      - ./throw-away/data/idaas:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # The playground's view of the IdP: localhost:9443 inside its own network
+  # namespace, forwarded to nginx over the compose network's DNS.
   oidc-localhost-bridge:
     image: alpine/socat
     container_name: flowcode-oidc-bridge
     restart: unless-stopped
     network_mode: "service:playground"
-    command: "TCP-LISTEN:9400,fork,reuseaddr TCP:oidc-mock:9400"
+    command: "TCP-LISTEN:9443,fork,reuseaddr TCP:nginx:9443"
     depends_on:
       - playground
-      - oidc-mock
+      - nginx
     logging:
       driver: json-file
       options:
@@ -112,16 +126,16 @@ services:
         max-file: "2"
 
   # The admin service does its own OIDC discovery, so it needs the same
-  # localhost view of the mock through its own network namespace.
+  # localhost view of the IdP through its own network namespace.
   admin-oidc-localhost-bridge:
     image: alpine/socat
     container_name: flowcode-admin-oidc-bridge
     restart: unless-stopped
     network_mode: "service:admin"
-    command: "TCP-LISTEN:9400,fork,reuseaddr TCP:oidc-mock:9400"
+    command: "TCP-LISTEN:9443,fork,reuseaddr TCP:nginx:9443"
     depends_on:
       - admin
-      - oidc-mock
+      - nginx
     logging:
       driver: json-file
       options:

@@ -91,7 +91,7 @@ func newServerFromEnv() (*Server, error) {
 		return nil, err
 	}
 
-	// Generous enough for the OIDC discovery retry loop on a cold boot.
+	// Settings bootstrap on a cold database.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
@@ -105,10 +105,7 @@ func newServerFromEnv() (*Server, error) {
 		return nil, err
 	}
 
-	provider, err := newAuth(ctx, issuer, clientID, clientSecret, os.Getenv("OIDC_REDIRECT_URL"))
-	if err != nil {
-		return nil, err
-	}
+	provider := newAuth(issuer, clientID, clientSecret, os.Getenv("OIDC_REDIRECT_URL"))
 	provider.secret = []byte(adminSecret)
 
 	s := &Server{

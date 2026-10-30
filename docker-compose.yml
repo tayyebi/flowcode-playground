@@ -54,9 +54,9 @@
 # drop a real fullchain.pem + privkey.pem into ./certs/ and restart the
 # nginx service to replace them.
 #
-# Optional: `docker compose -f docker-compose.override.yml up -d` adds a
-# local Loki for Logger.log (configure Logger → http://loki-mock:3100 in
-# /admin).
+# Optional: docker-compose.override.yml adds the local test rig — the idaas
+# OIDC provider (fronted by nginx on :9443) plus one localhost bridge per Go
+# service, and pins both binaries' OIDC env to it.
 
 services:
   postgres:

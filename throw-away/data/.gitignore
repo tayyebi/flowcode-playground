@@ -1,1 +1,7 @@
+# idaas runtime state: signing keys and the managed-user store (password
+# hashes) — never commit those. clients.conf is configuration and stays.
+idaas/*
+!idaas/clients.conf
+
+# legacy rig leftovers
 *.json

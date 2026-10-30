@@ -157,7 +157,7 @@ func newServerFromEnv() (*Server, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Generous enough for the OIDC discovery retry loop on a cold boot.
+	// Settings bootstrap on a cold database.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
@@ -175,10 +175,7 @@ func newServerFromEnv() (*Server, error) {
 		return nil, fmt.Errorf("ensure service token: %w", err)
 	}
 
-	provider, err := newAuth(ctx, issuer, clientID, clientSecret, oidcRedirect)
-	if err != nil {
-		return nil, err
-	}
+	provider := newAuth(issuer, clientID, clientSecret, oidcRedirect)
 	provider.secret = []byte(sessionSecret)
 
 	appsSvc := apps.New(st, mgr)

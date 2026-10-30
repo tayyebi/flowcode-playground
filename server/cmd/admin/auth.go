@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -27,52 +28,53 @@ const (
 	adminSessionCookieName = "pg_admin_session"
 	adminSessionTTL        = 12 * time.Hour
 	adminStateCookieName   = "pg_admin_oidc_state"
+	adminNonceCookieName   = "pg_admin_oidc_nonce"
 	adminStateTTL          = 10 * time.Minute
 )
 
 type auth struct {
-	oauth    *oauth2.Config
-	verifier *oidc.IDTokenVerifier
+	ready    atomic.Pointer[oidcEndpoints]
 	secret   []byte // HMAC key for admin session cookies (system_settings.__admin_session_secret)
 	redirect string // optional OIDC_REDIRECT_URL override
 }
 
-func newAuth(ctx context.Context, issuer, clientID, clientSecret, redirect string) (*auth, error) {
-	// Retry discovery: on a cold compose boot the IdP (or the sidecar that
-	// makes it reachable as "localhost") may not be listening yet, and a
-	// startup error here crash-loops the service.
-	provider, err := newProviderWithRetry(ctx, issuer)
-	if err != nil {
-		return nil, err
-	}
-	return &auth{
-		oauth: &oauth2.Config{
-			ClientID:     clientID,
-			ClientSecret: clientSecret,
-			Endpoint:     provider.Endpoint(),
-			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
-		},
-		verifier: provider.Verifier(&oidc.Config{ClientID: clientID}),
-		redirect: redirect,
-	}, nil
+// oidcEndpoints is whatever discovery produces; it appears atomically once
+// the provider answers.
+type oidcEndpoints struct {
+	oauth    *oauth2.Config
+	verifier *oidc.IDTokenVerifier
 }
 
-func newProviderWithRetry(ctx context.Context, issuer string) (*oidc.Provider, error) {
-	var lastErr error
-	for attempt := 0; attempt < 30; attempt++ {
-		provider, err := oidc.NewProvider(ctx, issuer)
-		if err == nil {
-			return provider, nil
+// newAuth returns immediately and fills in the endpoints from a background
+// discovery loop that retries forever. The HTTP listener (and /healthz)
+// must come up before the IdP is reachable: on a cold compose boot the
+// issuer is only reachable through services that themselves wait on this
+// binary's health, so blocking here would deadlock the whole stack — and
+// exiting on failure would crash-loop instead of recovering the moment the
+// IdP appears.
+func newAuth(issuer, clientID, clientSecret, redirect string) *auth {
+	a := &auth{redirect: redirect}
+	go func() {
+		for {
+			provider, err := oidc.NewProvider(context.Background(), issuer)
+			if err == nil {
+				a.ready.Store(&oidcEndpoints{
+					oauth: &oauth2.Config{
+						ClientID:     clientID,
+						ClientSecret: clientSecret,
+						Endpoint:     provider.Endpoint(),
+						Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
+					},
+					verifier: provider.Verifier(&oidc.Config{ClientID: clientID}),
+				})
+				log.Printf("OIDC provider ready (%s)", issuer)
+				return
+			}
+			log.Printf("OIDC discovery against %s: %v — retrying in 2s", issuer, err)
+			time.Sleep(2 * time.Second)
 		}
-		lastErr = fmt.Errorf("OIDC discovery against %s: %w", issuer, err)
-		log.Printf("%v — retrying in 2s (%d/30)", lastErr, attempt+1)
-		select {
-		case <-ctx.Done():
-			return nil, lastErr
-		case <-time.After(2 * time.Second):
-		}
-	}
-	return nil, lastErr
+	}()
+	return a
 }
 
 // callbackURL builds the redirect URI. TLS terminates at nginx, so behind a
@@ -98,6 +100,11 @@ func (s *Server) callbackURL(r *http.Request) string {
 /* ------------------------------------------------------------------ */
 
 func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
+	ready := s.auth.ready.Load()
+	if ready == nil {
+		http.Redirect(w, r, "/admin/login?err="+queryEscape("sign-in provider is still starting, try again"), http.StatusSeeOther)
+		return
+	}
 	state := randomToken(16)
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminStateCookieName,
@@ -107,13 +114,29 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, s.auth.oauth.AuthCodeURL(state, oauth2.SetAuthURLParam("redirect_uri", s.callbackURL(r))), http.StatusSeeOther)
+	nonce := randomToken(16)
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminNonceCookieName,
+		Value:    nonce,
+		Path:     "/",
+		MaxAge:   int(adminStateTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, ready.oauth.AuthCodeURL(state,
+		oauth2.SetAuthURLParam("redirect_uri", s.callbackURL(r)),
+		oauth2.SetAuthURLParam("nonce", nonce)), http.StatusSeeOther)
 }
 
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if errStr := q.Get("error"); errStr != "" {
 		http.Redirect(w, r, "/admin/login?err="+queryEscape(errStr), http.StatusSeeOther)
+		return
+	}
+	ready := s.auth.ready.Load()
+	if ready == nil {
+		http.Redirect(w, r, "/admin/login?err="+queryEscape("sign-in provider is still starting, try again"), http.StatusSeeOther)
 		return
 	}
 	state := q.Get("state")
@@ -123,9 +146,11 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: adminStateCookieName, Value: "", Path: "/", MaxAge: -1})
+	nonceCookie, nerr := r.Cookie(adminNonceCookieName)
+	http.SetCookie(w, &http.Cookie{Name: adminNonceCookieName, Value: "", Path: "/", MaxAge: -1})
 
 	ctx := r.Context()
-	tok, err := s.auth.oauth.Exchange(ctx, q.Get("code"), oauth2.SetAuthURLParam("redirect_uri", s.callbackURL(r)))
+	tok, err := ready.oauth.Exchange(ctx, q.Get("code"), oauth2.SetAuthURLParam("redirect_uri", s.callbackURL(r)))
 	if err != nil {
 		http.Redirect(w, r, "/admin/login?err="+queryEscape("token exchange failed"), http.StatusSeeOther)
 		return
@@ -135,7 +160,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/login?err="+queryEscape("provider returned no id_token"), http.StatusSeeOther)
 		return
 	}
-	idt, err := s.auth.verifier.Verify(ctx, rawID)
+	idt, err := ready.verifier.Verify(ctx, rawID)
 	if err != nil {
 		http.Redirect(w, r, "/admin/login?err="+queryEscape("id_token verification failed: "+err.Error()), http.StatusSeeOther)
 		return
@@ -145,9 +170,14 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		Email   string `json:"email"`
 		Name    string `json:"name"`
 		Picture string `json:"picture"`
+		Nonce   string `json:"nonce"`
 	}
 	if err := idt.Claims(&claims); err != nil || claims.Sub == "" {
 		http.Redirect(w, r, "/admin/login?err="+queryEscape("id_token carried no subject"), http.StatusSeeOther)
+		return
+	}
+	if nerr != nil || nonceCookie.Value == "" || claims.Nonce != nonceCookie.Value {
+		http.Redirect(w, r, "/admin/login?err="+queryEscape("login session expired, try again"), http.StatusSeeOther)
 		return
 	}
 
