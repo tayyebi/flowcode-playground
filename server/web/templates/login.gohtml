@@ -1,9 +1,11 @@
 {{template "top.gohtml" .}}
 
 <h1>Log in</h1>
-<form method="get" action="/login/go" class="card login-card">
-  <p>Sign in with your organization account (single sign-on).</p>
-  <button type="submit" class="btn btn-primary">Continue with SSO</button>
+<form method="get" action="/login/go">
+  <fieldset>
+    <p><small>Sign in with your organization account (single sign-on).</small></p>
+    <button type="submit">Continue with SSO</button>
+  </fieldset>
 </form>
 
 {{template "bottom.gohtml" .}}

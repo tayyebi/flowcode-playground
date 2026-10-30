@@ -1,20 +1,20 @@
 {{/* The section rail of the selected area. Each app gets Configuration /
      Logs / Rate limits; System gets its own pages. */}}
-<aside class="rail rail-sections">
-  <div class="rail-head">
-    <span class="rail-title">{{if eq .Rail.Area "mail"}}Mail app{{else if eq .Rail.Area "http"}}HTTP app{{else if eq .Rail.Area "logger"}}Logger app{{else}}System{{end}}</span>
-  </div>
-  <nav class="rail-list">
+<aside>
+  <header>
+    <h2>{{if eq .Rail.Area "mail"}}Mail app{{else if eq .Rail.Area "http"}}HTTP app{{else if eq .Rail.Area "logger"}}Logger app{{else}}System{{end}}</h2>
+  </header>
+  <nav aria-label="Sections">
     {{$area := .Rail.Area}}{{$sec := .Rail.Section}}
     {{if eq $area "system"}}
-    <a href="/admin/users" class="rail-link{{if eq $sec "users"}} active{{end}}">Users</a>
-    <a href="/admin/executions" class="rail-link{{if eq $sec "executions"}} active{{end}}">Executions</a>
-    <a href="/admin/administrators" class="rail-link{{if eq $sec "administrators"}} active{{end}}">Administrators</a>
-    <a href="/admin/general" class="rail-link{{if eq $sec "general"}} active{{end}}">General</a>
+    <a href="/admin/users"{{if eq $sec "users"}} aria-current="page"{{end}}>Users</a>
+    <a href="/admin/executions"{{if eq $sec "executions"}} aria-current="page"{{end}}>Executions</a>
+    <a href="/admin/administrators"{{if eq $sec "administrators"}} aria-current="page"{{end}}>Administrators</a>
+    <a href="/admin/general"{{if eq $sec "general"}} aria-current="page"{{end}}>General</a>
     {{else}}
-    <a href="/admin/{{$area}}" class="rail-link{{if eq $sec "config"}} active{{end}}">Configuration</a>
-    <a href="/admin/{{$area}}/logs" class="rail-link{{if eq $sec "logs"}} active{{end}}">Logs</a>
-    <a href="/admin/quotas?app={{$area}}" class="rail-link{{if eq $sec "quotas"}} active{{end}}">Rate limits</a>
+    <a href="/admin/{{$area}}"{{if eq $sec "config"}} aria-current="page"{{end}}>Configuration</a>
+    <a href="/admin/{{$area}}/logs"{{if eq $sec "logs"}} aria-current="page"{{end}}>Logs</a>
+    <a href="/admin/quotas?app={{$area}}"{{if eq $sec "quotas"}} aria-current="page"{{end}}>Rate limits</a>
     {{end}}
   </nav>
 </aside>

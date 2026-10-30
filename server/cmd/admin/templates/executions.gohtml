@@ -1,28 +1,31 @@
 {{template "top.gohtml" .}}
 
-<h1>Executions <span class="muted">· global audit, newest first</span></h1>
+<header>
+  <h1>Executions</h1>
+  <small>global audit, newest first</small>
+</header>
 
 {{if .Audit}}
-<table class="list">
+<table>
   <thead><tr><th>#</th><th>Project</th><th>File</th><th>Source</th><th>Actor</th><th>Started</th><th>Compile</th><th>Run</th><th>Error</th></tr></thead>
   <tbody>
     {{range .Audit}}
     <tr>
-      <td class="num">{{.ID}}</td>
-      <td>{{.ProjectName}}</td>
-      <td>{{.FileName}}</td>
-      <td><span class="tag tag-{{.Source}}">{{.Source}}</span></td>
-      <td class="muted">{{.ActorEmail}}</td>
-      <td class="muted">{{.StartedAt}}</td>
-      <td>{{with .CompileExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-      <td>{{with .RunExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-      <td class="muted wrap">{{.Error}}</td>
+      <td data-label="#">{{.ID}}</td>
+      <td data-label="Project">{{.ProjectName}}</td>
+      <td data-label="File">{{.FileName}}</td>
+      <td data-label="Source"><data value="{{.Source}}">{{.Source}}</data></td>
+      <td data-label="Actor"><small>{{.ActorEmail}}</small></td>
+      <td data-label="Started"><small>{{.StartedAt}}</small></td>
+      <td data-label="Compile">{{with .CompileExitCode}}{{.}}{{else}}<small>—</small>{{end}}</td>
+      <td data-label="Run">{{with .RunExitCode}}{{.}}{{else}}<small>—</small>{{end}}</td>
+      <td data-label="Error"><small>{{.Error}}</small></td>
     </tr>
     {{end}}
   </tbody>
 </table>
 {{else}}
-<p class="note">No executions recorded yet.</p>
+<p><small>No executions recorded yet.</small></p>
 {{end}}
 
 {{template "bottom.gohtml" .}}

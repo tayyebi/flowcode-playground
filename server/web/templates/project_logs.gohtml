@@ -1,33 +1,33 @@
 {{template "top.gohtml" .}}
 
-<div class="page-head">
+<header>
   <h1>Logs</h1>
-  <span class="muted">app-call activity for this project · newest first · latest 100</span>
-</div>
+  <small>app-call activity for this project · newest first · latest 100</small>
+</header>
 
 {{if .Entries}}
-<table class="list logs-table">
+<table>
   <thead>
     <tr><th>Time</th><th>App</th><th>Call</th><th>Exec</th><th>Status</th><th>Duration</th><th>Request</th><th>Response</th></tr>
   </thead>
   <tbody>
     {{range .Entries}}
     <tr>
-      <td class="muted slug">{{.When}}</td>
-      <td><span class="tag">{{.App}}</span></td>
-      <td class="mono">{{.Name}}</td>
-      <td>{{if .ExecID}}<a href="/projects/{{$.P.ID}}/executions/{{.ExecID}}">#{{.ExecID}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
-      <td>{{.Status}}</td>
-      <td>{{if .DurationMs}}<span class="num">{{.DurationMs}} ms</span>{{else}}<span class="muted">—</span>{{end}}</td>
-      <td class="muted wrap">{{if .Request}}{{.Request}}{{else}}—{{end}}</td>
-      <td class="muted wrap">{{if .Response}}{{.Response}}{{else}}—{{end}}</td>
+      <td data-label="Time"><small>{{.When}}</small></td>
+      <td data-label="App"><data value="{{.App}}">{{.App}}</data></td>
+      <td data-label="Call"><code>{{.Name}}</code></td>
+      <td data-label="Exec">{{if .ExecID}}<a href="/projects/{{$.P.ID}}/executions/{{.ExecID}}">#{{.ExecID}}</a>{{else}}<small>—</small>{{end}}</td>
+      <td data-label="Status">{{.Status}}</td>
+      <td data-label="Duration">{{if .DurationMs}}{{.DurationMs}} ms{{else}}<small>—</small>{{end}}</td>
+      <td data-label="Request"><small>{{if .Request}}{{.Request}}{{else}}—{{end}}</small></td>
+      <td data-label="Response"><small>{{if .Response}}{{.Response}}{{else}}—{{end}}</small></td>
     </tr>
     {{end}}
   </tbody>
 </table>
-<p class="note">Operational records of the Mail, HTTP, and Logger apps for this project. Logger user entries live in Loki.</p>
+<p><small>Operational records of the Mail, HTTP, and Logger apps for this project. Logger user entries live in Loki.</small></p>
 {{else}}
-<p class="note">No app calls recorded for this project yet — run a workflow that uses Mail, HTTP, or Logger and its trail appears here.</p>
+<p><small>No app calls recorded for this project yet — run a workflow that uses Mail, HTTP, or Logger and its trail appears here.</small></p>
 {{end}}
 
 {{template "bottom.gohtml" .}}

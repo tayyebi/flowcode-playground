@@ -1,14 +1,14 @@
 {{template "top.gohtml" .}}
 
 <h1>Administration</h1>
-<p class="note">A separate service from the playground: its own sign-on, its own
-allowlist ({{.AdminCount}} administrator(s)), one shared database.</p>
+<p><small>A separate service from the playground: its own sign-on, its own
+allowlist ({{.AdminCount}} administrator(s)), one shared database.</small></p>
 
-<table class="list meta">
-  <tr><th>Mail app</th><td>{{if .Mail}}<span class="tag tag-ok">enabled</span>{{else}}<span class="tag tag-muted">disabled</span>{{end}} <a href="/admin/mail">configure</a></td></tr>
-  <tr><th>HTTP app</th><td>{{if .HTTP}}<span class="tag tag-ok">enabled</span>{{else}}<span class="tag tag-muted">disabled</span>{{end}} <a href="/admin/http">configure</a></td></tr>
-  <tr><th>Logger app</th><td>{{if .Logger}}<span class="tag tag-ok">enabled</span>{{else}}<span class="tag tag-muted">disabled</span>{{end}} <a href="/admin/logger">configure</a></td></tr>
-  <tr><th>Default quotas</th><td>mail {{.Quotas.MailPerMinute}}/min · http {{.Quotas.HTTPPerMinute}}/min · logger {{.Quotas.LoggerPerMinute}}/min</td></tr>
-</table>
+<dl>
+  <dt>Mail app</dt><dd>{{if .Mail}}<data value="enabled">enabled</data>{{else}}<data value="disabled">disabled</data>{{end}} <a href="/admin/mail">configure</a></dd>
+  <dt>HTTP app</dt><dd>{{if .HTTP}}<data value="enabled">enabled</data>{{else}}<data value="disabled">disabled</data>{{end}} <a href="/admin/http">configure</a></dd>
+  <dt>Logger app</dt><dd>{{if .Logger}}<data value="enabled">enabled</data>{{else}}<data value="disabled">disabled</data>{{end}} <a href="/admin/logger">configure</a></dd>
+  <dt>Default quotas</dt><dd>mail {{.Quotas.MailPerMinute}}/min · http {{.Quotas.HTTPPerMinute}}/min · logger {{.Quotas.LoggerPerMinute}}/min</dd>
+</dl>
 
 {{template "bottom.gohtml" .}}

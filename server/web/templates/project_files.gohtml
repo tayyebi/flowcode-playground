@@ -1,72 +1,59 @@
 {{template "top.gohtml" .}}
 
-<div class="files-layout">
-  <aside class="rail rail-files">
-    <div class="rail-head">
-      <span class="rail-title">Files</span>
-      {{if .CanEdit}}<a href="#new-file" class="btn btn-secondary btn-small">+ Add</a>{{end}}
-    </div>
-    <nav class="rail-list">
-      {{$pid := .P.ID}}{{$sel := .Selected}}
-      {{range .Files}}
-      <a href="/projects/{{$pid}}/files?file={{.Name | urlquery}}" class="rail-link mono{{if and $sel (eq .Name $sel.Name)}} active{{end}}" title="{{.Name}}">{{.Name}}</a>
-      {{else}}
-      <p class="note">No files yet.</p>
-      {{end}}
-    </nav>
+<aside>
+  <header>
+    <h2>Files</h2>
     {{if .CanEdit}}
-    <div class="modal" id="new-file">
-      <div class="modal-card">
-        <h2>Add file</h2>
-        <form method="post" action="/projects/{{.P.ID}}/files/new" class="stack-form">
-          <input name="name" placeholder="new-file.fc" required />
-          <div class="row-actions">
-            <button type="submit" class="btn btn-primary">Add file</button>
-            <a href="#" class="btn btn-ghost">Cancel</a>
-          </div>
-        </form>
-        <p class="note">The .fc suffix is added automatically.</p>
-      </div>
-    </div>
-    {{end}}
-  </aside>
-
-  <section class="editor-pane">
-    {{with .Selected}}
-    {{if $.CanEdit}}
-    <form method="post" action="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/save" class="editor-form">
-      <div class="editor-topbar">
-        <input name="name" value="{{.Name}}" class="editor-name" required aria-label="File name" />
-        <span class="muted editor-meta">updated {{.UpdatedAt}}</span>
-        <span class="spacer"></span>
-        <button type="submit" formaction="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/save" class="btn">Save</button>
-        <button type="submit" formaction="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/run" class="btn btn-primary">Run ▸</button>
-      </div>
-      <textarea name="content" class="source editor-source" spellcheck="false" wrap="off">{{.Content}}</textarea>
-    </form>
-    <div class="editor-footer">
-      <span class="muted slug">{{$.P.Slug}}/{{.Name}}</span>
-      <span class="spacer"></span>
-      <form method="post" action="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/delete" class="inline-form">
-        <button type="submit" class="btn btn-danger btn-small">Delete file</button>
+    <details>
+      <summary>Add</summary>
+      <form method="post" action="/projects/{{.P.ID}}/files/new">
+        <label>Name <input name="name" placeholder="new-file.fc" required autocapitalize="none" spellcheck="false" /></label>
+        <button type="submit">Add file</button>
       </form>
-    </div>
-    {{else}}
-    <div class="editor-topbar">
-      <span class="mono">{{.Name}}</span>
-      <span class="muted editor-meta">updated {{.UpdatedAt}} · read-only</span>
-    </div>
-    <textarea class="source editor-source" spellcheck="false" wrap="off" readonly>{{.Content}}</textarea>
+    </details>
     {{end}}
+  </header>
+  <nav aria-label="Files">
+    {{$pid := .P.ID}}{{$sel := .Selected}}
+    {{range .Files}}
+    <a href="/projects/{{$pid}}/files?file={{.Name | urlquery}}"{{if and $sel (eq .Name $sel.Name)}} aria-current="page"{{end}} title="{{.Name}}">{{.Name}}</a>
     {{else}}
-    <div class="empty-state">
-      <h2>No file selected</h2>
-      <p class="note">{{if .CanEdit}}Add a file to get started.{{else}}This project has no files yet.{{end}}</p>
-    </div>
+    <p><small>No files yet.</small></p>
     {{end}}
+  </nav>
+</aside>
 
-    {{with .Result}}{{template "result.gohtml" .}}{{end}}
-  </section>
-</div>
+<section>
+  {{with .Selected}}
+  {{if $.CanEdit}}
+  <form method="post" action="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/save">
+    <header>
+      <input name="name" value="{{.Name}}" required aria-label="File name" autocapitalize="none" spellcheck="false" />
+      <small>updated {{.UpdatedAt}}</small>
+      <button type="submit" formaction="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/save">Save</button>
+      <button type="submit" formaction="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/run">Run ▸</button>
+    </header>
+    <textarea name="content" spellcheck="false" wrap="off">{{.Content}}</textarea>
+  </form>
+  <footer>
+    <code>{{$.P.Slug}}/{{.Name}}</code>
+    <form method="post" action="/projects/{{$.P.ID}}/files/{{.Name | urlquery}}/delete">
+      <button type="submit">Delete file</button>
+    </form>
+  </footer>
+  {{else}}
+  <header>
+    <code>{{.Name}}</code>
+    <small>updated {{.UpdatedAt}} · read-only</small>
+  </header>
+  <textarea spellcheck="false" wrap="off" readonly>{{.Content}}</textarea>
+  {{end}}
+  {{else}}
+  <h2>No file selected</h2>
+  <p><small>{{if .CanEdit}}Add a file to get started.{{else}}This project has no files yet.{{end}}</small></p>
+  {{end}}
+
+  {{with .Result}}{{template "result.gohtml" .}}{{end}}
+</section>
 
 {{template "bottom.gohtml" .}}

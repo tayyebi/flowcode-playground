@@ -1,34 +1,36 @@
 {{template "top.gohtml" .}}
 
 <h1>{{if eq .App "mail"}}Mail app{{else if eq .App "http"}}HTTP app{{else if eq .App "logger"}}Logger app{{else}}App{{end}} — Logs</h1>
-<p class="note">This app's own log file (<code>data/logs/{{.App}}.log</code>), newest first — one line per bridge call, successes and failures alike. User log entries live only in Loki, the Logger app's external backend; mail bodies live only in the mail system.</p>
+<p><small>This app's own log file (<code>data/logs/{{.App}}.log</code>), newest first — one line per bridge call, successes and failures alike. User log entries live only in Loki, the Logger app's external backend; mail bodies live only in the mail system.</small></p>
 
-<form method="get" action="{{if eq .App "mail"}}/admin/mail/logs{{else if eq .App "http"}}/admin/http/logs{{else}}/admin/logger/logs{{end}}" class="row-form">
-  <input name="user" value="{{.UserFilter}}" placeholder="filter by user" size="32" />
-  <button>filter</button>
-  {{if .UserFilter}}<a href="?">clear</a>{{end}}
-</form>
+<search>
+  <form method="get" action="{{if eq .App "mail"}}/admin/mail/logs{{else if eq .App "http"}}/admin/http/logs{{else}}/admin/logger/logs{{end}}">
+    <label>User <input name="user" value="{{.UserFilter}}" placeholder="filter by user" /></label>
+    <button type="submit">Filter</button>
+    {{if .UserFilter}}<a href="?">clear</a>{{end}}
+  </form>
+</search>
 
 {{if .Entries}}
-<table class="list">
+<table>
   <thead><tr><th>When (UTC)</th><th>Call</th><th>User</th><th>Status</th><th>Duration</th><th>Request</th><th>Response</th><th>Exec</th></tr></thead>
   <tbody>
     {{range .Entries}}
     <tr>
-      <td class="muted">{{.Time}}</td>
-      <td><code>{{.Name}}</code></td>
-      <td class="muted">{{.User}}</td>
-      <td>{{.Status}}</td>
-      <td class="num">{{.DurationMs}} ms</td>
-      <td class="muted wrap">{{.Request}}</td>
-      <td class="muted wrap">{{.Response}}</td>
-      <td class="num">{{if .ExecID}}#{{.ExecID}}{{end}}</td>
+      <td data-label="When (UTC)"><small>{{.Time}}</small></td>
+      <td data-label="Call"><code>{{.Name}}</code></td>
+      <td data-label="User"><small>{{.User}}</small></td>
+      <td data-label="Status">{{.Status}}</td>
+      <td data-label="Duration">{{.DurationMs}} ms</td>
+      <td data-label="Request"><small>{{.Request}}</small></td>
+      <td data-label="Response"><small>{{.Response}}</small></td>
+      <td data-label="Exec">{{if .ExecID}}#{{.ExecID}}{{end}}</td>
     </tr>
     {{end}}
   </tbody>
 </table>
 {{else}}
-<p class="note">No entries{{if .UserFilter}} for this user{{end}} yet.</p>
+<p><small>No entries{{if .UserFilter}} for this user{{end}} yet.</small></p>
 {{end}}
 
 {{template "bottom.gohtml" .}}

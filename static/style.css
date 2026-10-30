@@ -1,396 +1,955 @@
-/* FlowCode Playground — server-rendered UI. No JavaScript anywhere. */
+/* FlowCode Playground design system — one stylesheet, zero classes.
+
+   The frontend is semantic HTML only: no class attributes, no ids, no
+   inline styles, no JavaScript. Everything here selects on elements,
+   attributes (aria-current, role, value, formaction, action suffixes)
+   and structure (:has(), :only-child, …). The desktop app shell needs
+   :has() (Baseline, all evergreen browsers); without it the UI simply
+   keeps the mobile stacked layout.
+
+   Palette: neutral greys only — hierarchy comes from weight, fill
+   (paper / sunken) and inversion (ink), never from hue. Light and dark
+   ride the same tokens through light-dark().
+
+   Layout is mobile-first from a 300px viewport: tables are stacks of
+   labelled row-cards and rails are chip strips; 48em restores the
+   columnar tables and adds the rail shell, 80em widens the rails.
+
+   Served by nginx with a 7-day cache: bump ?v= in the three template
+   heads whenever this file changes. */
 
 :root {
-  --bg: #f7f8fa;
-  --bg-raised: #ffffff;
-  --bg-sunken: #eef0f4;
-  --border: #e3e6eb;
-  --border-strong: #c9cdd6;
-  --text: #1f2430;
-  --text-muted: #6b7280;
-  --accent: #2563eb;
-  --accent-contrast: #ffffff;
-  --danger: #b91c1c;
-  --danger-bg: #fee2e2;
-  --ok: #15803d;
-  --ok-bg: #dcfce7;
-  --warn: #b45309;
-  --warn-bg: #fef3c7;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light dark;
+  --paper: light-dark(#ffffff, #17171a);
+  --bg: light-dark(#f7f7f8, #101013);
+  --sunken: light-dark(#ececef, #0a0a0c);
+  --border: light-dark(#e3e3e7, #26262b);
+  --border-strong: light-dark(#c7c7cd, #3b3b42);
+  --text: light-dark(#1b1b1f, #e7e7ea);
+  --muted: light-dark(#6a6a73, #8d8d97);
+  --ink: light-dark(#1b1b1f, #e7e7ea);
+  --on-ink: light-dark(#ffffff, #101013);
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --radius: 8px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #10141b;
-    --bg-raised: #181d27;
-    --bg-sunken: #0c0f15;
-    --border: #262d3a;
-    --border-strong: #39424f;
-    --text: #e6e9ef;
-    --text-muted: #8b93a3;
-    --accent: #3b82f6;
-    --danger: #f87171;
-    --danger-bg: #3a1d1d;
-    --ok: #4ade80;
-    --ok-bg: #14301f;
-    --warn: #fbbf24;
-    --warn-bg: #33270e;
-  }
-}
+/* ------------------------------------------------------------------ */
+/* Reset and base type                                                 */
+/* ------------------------------------------------------------------ */
 
 * { box-sizing: border-box; }
 
-html, body {
-  margin: 0;
-  padding: 0;
+html {
+  scrollbar-gutter: stable;
+  /* App, not document: no rubber-band/pull-to-refresh chain past the ends */
+  overscroll-behavior-y: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
+  margin: 0;
+  min-height: 100dvh;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 0.9375rem/1.55 var(--sans);
 }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+h1, h2, h3, p, dl, dd, figure { margin: 0; }
+p { margin-bottom: 0.75rem; }
+ul { margin: 0.25rem 0 0.75rem; padding: 0; }
 
-code, pre, textarea.source, .num, .opcode, .arg {
-  font-family: var(--mono);
-  font-size: 12.5px;
+h1 { font-size: clamp(1.25rem, 1rem + 1.5vw, 1.5rem); letter-spacing: -0.015em; }
+h2 { font-size: 1rem; }
+h3 {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
 }
 
-.muted { color: var(--text-muted); font-weight: 400; }
-.slug { font-family: var(--mono); font-size: 12px; }
-.spacer { flex: 1; }
-.wrap { white-space: pre-wrap; word-break: break-all; }
+small { color: var(--muted); font-weight: 400; }
+code, pre { font-family: var(--mono); }
+code {
+  font-size: 0.8125rem;
+  background: var(--sunken);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
 
-/* Chrome */
+/* ------------------------------------------------------------------ */
+/* Links and focus                                                     */
+/* ------------------------------------------------------------------ */
 
-.topnav {
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 0.2em;
+}
+a:hover { text-decoration-color: currentColor; }
+a:active { opacity: 0.7; }
+a:focus-visible, button:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+::placeholder { color: var(--muted); opacity: 1; }
+::selection { background: var(--ink); color: var(--on-ink); }
+
+/* ------------------------------------------------------------------ */
+/* Top bar                                                             */
+/* ------------------------------------------------------------------ */
+
+body > header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
-  gap: 16px;
-  height: 52px;
-  padding: 0 20px;
+  gap: 1rem;
+  min-height: 3rem;
+  padding: 0.25rem max(1rem, env(safe-area-inset-right)) 0.25rem max(1rem, env(safe-area-inset-left));
+  background: var(--paper);
   border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
 }
-
-.topnav-brand {
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: -0.01em;
-  color: var(--text);
-}
-
-.page {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 20px;
-}
-
-.page-head {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-h1 { font-size: 22px; margin: 8px 0 12px; letter-spacing: -0.02em; }
-h2 { font-size: 16px; margin: 20px 0 8px; }
-h3 { font-size: 13.5px; margin: 14px 0 6px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
-
-.flash {
-  padding: 8px 12px;
-  border-radius: var(--radius);
-  font-size: 13px;
-}
-.flash-ok { background: var(--ok-bg); color: var(--ok); }
-.flash-err { background: var(--danger-bg); color: var(--danger); }
-
-.note { color: var(--text-muted); font-size: 13px; }
-
-/* Forms */
-
-input, select {
-  font: inherit;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
-  color: var(--text);
-}
-
-textarea.source {
-  width: 100%;
-  padding: 12px;
-  line-height: 1.6;
-  tab-size: 4;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
-  color: var(--text);
-  resize: vertical;
-  white-space: pre;
-}
-
-.btn {
-  font: inherit;
-  height: 32px;
-  padding: 0 14px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
-  color: var(--text);
-  cursor: pointer;
-}
-.btn:hover { border-color: var(--accent); }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
-.btn-primary:hover { opacity: 0.9; }
-.btn-secondary { background: var(--bg-raised); }
-.btn-danger { color: var(--danger); }
-.btn-danger:hover { border-color: var(--danger); }
-.btn-ghost { border-color: transparent; background: transparent; color: var(--text-muted); }
-.btn-small { height: 26px; padding: 0 10px; font-size: 12.5px; }
-
-.inline-form { display: inline-block; margin: 0; }
-.row-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
-.row-form input, .row-form select { min-width: 0; }
-.row-actions { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
-
-.card {
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  margin: 8px 0 16px;
-}
-.login-card { max-width: 420px; }
-
-/* Projects list */
-
-table.list {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+body > header a { text-decoration: none; }
+body > header strong { font-size: 0.9375rem; letter-spacing: -0.01em; }
+body > header > :nth-child(2) {
+  margin-left: auto;
+  min-width: 0;
   overflow: hidden;
-  margin: 8px 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-table.list th, table.list td {
-  text-align: left;
-  padding: 8px 12px;
+
+/* ------------------------------------------------------------------ */
+/* Rails (mobile: full-width strips of wrapping chips)                 */
+/* ------------------------------------------------------------------ */
+
+aside {
+  background: var(--paper);
   border-bottom: 1px solid var(--border);
-  vertical-align: middle;
 }
-table.list thead th {
-  font-size: 12px;
+aside > header {
+  position: static;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem 0.35rem;
+}
+aside > header h2 {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+aside nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.35rem 0.75rem 0.75rem;
+}
+aside nav + nav { border-top: 1px solid var(--border); }
+aside nav a {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--sunken);
+  font-size: 0.8125rem;
+  text-decoration: none;
+}
+aside nav a:hover { border-color: var(--border-strong); background: var(--paper); }
+aside nav a[aria-current="page"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+  font-weight: 600;
+}
+aside nav p { padding: 0.2rem 0.4rem; }
+
+/* File names in the editor rail are code */
+main:has(> aside) > aside nav a { font-family: var(--mono); font-size: 0.75rem; }
+
+/* ------------------------------------------------------------------ */
+/* Main column                                                         */
+/* ------------------------------------------------------------------ */
+
+body:has(> aside) > main {
+  padding: 1rem max(1rem, env(safe-area-inset-right)) max(2rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  min-width: 0;
+}
+
+/* Bare pages (login, errors): one centered column */
+body:not(:has(> aside)) {
+  display: flex;
+  flex-direction: column;
+}
+body:not(:has(> aside)) > main {
+  margin: auto;
+  width: min(100%, 40rem);
+  padding: 2.5rem max(1.25rem, env(safe-area-inset-right)) max(2.5rem, env(safe-area-inset-bottom)) max(1.25rem, env(safe-area-inset-left));
+}
+
+main > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+main > h1 { margin: 0.5rem 0 0.75rem; }
+main > h2 { margin: 1.75rem 0 0.5rem; }
+main > p { max-width: 60ch; }
+
+main > section {
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.25rem 1.25rem 1rem;
+  margin: 1rem 0;
+}
+main > section > h2 { margin: 0.85rem 0 0.6rem; }
+
+/* App switcher inside main (admin rate limits) */
+main > nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0 1rem;
+}
+main > nav a {
+  padding: 0.2rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--paper);
+  font-size: 0.8125rem;
+  text-decoration: none;
+}
+main > nav a:hover { background: var(--sunken); }
+main > nav a[aria-current="page"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+}
+
+/* ------------------------------------------------------------------ */
+/* Definition lists (project details, execution meta, admin home)      */
+/* ------------------------------------------------------------------ */
+
+dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.45rem 1.5rem;
+  margin: 0.5rem 0 1rem;
+}
+dt { font-size: 0.8125rem; font-weight: 500; color: var(--muted); }
+dd { font-size: 0.875rem; min-width: 0; overflow-wrap: break-word; }
+
+/* ------------------------------------------------------------------ */
+/* Tables                                                              */
+/* ------------------------------------------------------------------ */
+
+/* Every cell carries its column name in data-label (mirrors the th), so
+   below 48em each row renders as a card of label/value pairs like the
+   dl lists; at 48em the real columnar table is restored inside this
+   scrollable box (the box, not the page, scrolls when columns cannot
+   fit). Screen readers see a proper table at every width. */
+table {
+  display: block;
+  overflow-x: auto;
+  width: 100%;
+  margin: 0.5rem 0 1rem;
+}
+
+/* Column headers only matter once there are columns */
+thead {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+tbody { display: block; }
+tbody tr {
+  display: block;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.9rem 0.6rem;
+  margin-bottom: 0.6rem;
+}
+tbody td {
+  display: block;
+  padding: 0.3rem 0;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  /* anywhere (not break-word) so long words count into min-content */
+  overflow-wrap: anywhere;
+}
+
+/* Labelled cells mirror the dl grid: label column, then the value */
+tbody td[data-label] {
+  display: grid;
+  grid-template-columns: minmax(4.5rem, max-content) minmax(0, 1fr);
+  gap: 0.3rem 1rem;
+  align-items: baseline;
+}
+tbody td[data-label]::before {
+  content: attr(data-label);
+  font-size: 0.6875rem;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-muted);
-  background: var(--bg-sunken);
-}
-table.list tr:last-child td { border-bottom: none; }
-table.list td:not(:first-child) { font-size: 13px; }
-table.meta th { width: 120px; color: var(--text-muted); font-weight: 500; }
-table.meta { width: auto; min-width: 480px; }
-
-/* App shell: topnav above a three-rail body (projects · sections · main).
-   The shell is exactly the viewport tall; each column scrolls on its own,
-   so the page itself never scrolls horizontally. */
-
-body.app { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
-.app-body { flex: 1; display: flex; min-height: 0; min-width: 0; overflow: hidden; }
-
-.rail { display: flex; flex-direction: column; flex: none; min-height: 0; overflow-y: auto; background: var(--bg-raised); }
-.rail-projects { width: 208px; border-right: 1px solid var(--border); }
-.rail-areas { width: 164px; border-right: 1px solid var(--border); }
-.rail-sections { width: 164px; border-right: 1px solid var(--border); }
-.rail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 10px 6px; flex: none; }
-.rail-title {
-  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.rail-list { display: flex; flex-direction: column; gap: 1px; padding: 0 8px 8px; }
-.rail-link {
-  display: block; padding: 5px 8px; border-radius: 6px; color: var(--text); font-size: 13px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.rail-link:hover { background: var(--bg-sunken); text-decoration: none; }
-.rail-link.active { background: var(--bg-sunken); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
-.mono { font-family: var(--mono); font-size: 12.5px; }
-.rail-sep { height: 1px; background: var(--border); margin: 8px 4px; flex: none; }
-
-.app-main { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 14px 20px 28px; }
-.app-main > .flash { margin: 0 0 10px; }
-
-/* Files section: the file rail + editor fill the viewport height */
-
-.app-main-fill { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
-.app-main-fill > .flash { margin: 10px 12px 0; flex: none; }
-.files-layout { flex: 1; display: flex; min-height: 0; min-width: 0; }
-.rail-files { width: 200px; background: var(--bg); }
-.editor-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
-.editor-form { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.editor-topbar {
-  display: flex; align-items: center; gap: 8px; flex: none;
-  padding: 8px 12px; background: var(--bg-raised); border-bottom: 1px solid var(--border);
-}
-.editor-name { width: 230px; max-width: 40%; font-family: var(--mono); font-size: 12.5px; }
-.editor-meta { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-textarea.editor-source {
-  flex: 1; min-height: 0; width: 100%; height: auto; resize: none;
-  border: none; border-radius: 0; padding: 12px 16px;
-  background: var(--bg); white-space: pre; overflow: auto;
-}
-textarea.editor-source:focus { outline: none; }
-.editor-footer {
-  display: flex; align-items: center; gap: 8px; flex: none; min-height: 34px;
-  padding: 4px 12px; background: var(--bg-raised); border-top: 1px solid var(--border);
-}
-.editor-pane .result {
-  flex: none; max-height: 45%; overflow-y: auto; margin: 0;
-  border-radius: 0; border-left: none; border-right: none; border-bottom: none;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
-/* Empty states (projects home, no file selected) */
-
-.empty-state {
-  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 6px; text-align: center; padding: 40px 20px;
-}
-.empty-state h1, .empty-state h2 { margin: 0; }
-
-/* Modal — CSS :target, no JavaScript */
-
-.modal {
-  display: none; position: fixed; inset: 0; z-index: 60;
-  align-items: center; justify-content: center; padding: 20px;
-  background: rgba(0, 0, 0, 0.45);
-}
-.modal:target { display: flex; }
-.modal-card {
-  width: min(440px, 100%); background: var(--bg-raised);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 18px 20px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
-}
-.modal-card h2 { margin: 0 0 6px; }
-.stack-form { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px; }
-.stack-form input { width: 100%; }
-
-/* Overview */
-
-.overview-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.stat-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
-.stat {
-  display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 92px;
-  padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--bg-sunken); color: var(--text);
-}
-.stat:hover { text-decoration: none; border-color: var(--accent); }
-.stat-num { font-size: 22px; font-weight: 700; }
-.stat-label { font-size: 12px; color: var(--text-muted); }
-
-/* Responsive: rails collapse to wrapping rows — still no horizontal scroll */
-
-@media (max-width: 900px) {
-  body.app { height: auto; min-height: 100dvh; overflow: visible; }
-  .app-body { flex-direction: column; overflow: visible; }
-  .rail-projects, .rail-sections, .rail-areas { width: auto; border-right: none; border-bottom: 1px solid var(--border); overflow: visible; }
-  .rail-list { flex-direction: row; flex-wrap: wrap; gap: 4px; }
-  .rail-link.active { box-shadow: none; }
-  .rail-sep { display: none; }
-  .app-main { overflow: visible; }
-  .app-main-fill { overflow: visible; }
-  .files-layout { flex-direction: column; }
-  .rail-files { width: auto; border-right: none; border-bottom: 1px solid var(--border); }
-  textarea.editor-source { min-height: 55vh; }
-  .overview-grid { grid-template-columns: 1fr; }
-}
-
-/* Result panel */
-
-.result {
-  margin-top: 20px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 4px 16px 16px;
-}
-
-.diagnostics { list-style: none; margin: 0; padding: 0; }
-.diagnostic {
-  padding: 8px 12px;
-  border-radius: 6px;
-  margin-bottom: 6px;
-  font-family: var(--mono);
-  font-size: 12.5px;
-}
-.diagnostic-warning { background: var(--warn-bg); color: var(--warn); }
-.diagnostic-error { background: var(--danger-bg); color: var(--danger); }
-.diagnostic-level { text-transform: uppercase; font-weight: 700; margin-right: 8px; }
-
-pre.trace {
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  overflow-x: auto;
-  line-height: 1.5;
-  margin: 8px 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-table.bytecode { width: 100%; border-collapse: collapse; }
-table.bytecode th, table.bytecode td {
-  text-align: left;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12.5px;
-}
-table.bytecode th { color: var(--text-muted); font-size: 11.5px; text-transform: uppercase; }
-td.opcode { font-weight: 700; }
-td.arg { color: var(--text-muted); }
-
-/* Panels */
-
-.panel-section {
-  margin-top: 20px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 4px 16px 16px;
-}
-
-.item-list { list-style: none; margin: 0; padding: 0; }
-.item {
+/* Unlabelled trailing cells are the card's action footer */
+tbody td:not([data-label]) {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
 }
-.item:last-child { border-bottom: none; }
-.item-actions { margin-left: auto; display: flex; gap: 6px; }
 
-.tag {
-  display: inline-block;
-  font-size: 11px;
+/* Data cells — timestamps, payloads, notes in tables are mono and muted */
+td small {
   font-family: var(--mono);
-  padding: 1px 7px;
-  border-radius: 9px;
-  background: var(--bg-sunken);
-  color: var(--text-muted);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
 }
-.tag-ok { background: var(--ok-bg); color: var(--ok); }
-.tag-project-run { background: var(--bg-sunken); }
-.tag-deployment { background: var(--warn-bg); color: var(--warn); }
-.tag-trigger { background: var(--ok-bg); color: var(--ok); }
 
-/* Administration area: same app shell, first rail switches the area
-   (Mail / HTTP / Logger / System), second rail is the section nav. */
+/* ------------------------------------------------------------------ */
+/* Forms                                                               */
+/* ------------------------------------------------------------------ */
+
+form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 0.8rem;
+  align-items: end;
+  margin: 0.75rem 0 1rem;
+}
+td form, li form { margin: 0; gap: 0.4rem 0.6rem; }
+
+label { font-size: 0.8125rem; font-weight: 500; color: var(--muted); }
+
+/* Text-ish controls: label stacks above the control */
+label:has(> input:not([type="checkbox"], [type="radio"], [type="hidden"])),
+label:has(> select),
+label:has(> textarea) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1 1 12rem;
+  max-width: 24rem;
+  min-width: 0;
+}
+
+/* Checkboxes and radios: label rides inline */
+label:has(> [type="checkbox"], > [type="radio"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+input:not([type="checkbox"], [type="radio"], [type="hidden"]),
+select, textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--paper);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.65rem;
+  min-height: 2.25rem;
+  width: 100%;
+}
+select { cursor: pointer; }
+textarea { min-height: 7rem; resize: vertical; font-family: var(--mono); font-size: 0.8125rem; line-height: 1.5; }
+
+input:hover, select:hover, textarea:hover { border-color: var(--muted); }
+input:disabled, select:disabled, textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--sunken);
+}
+input:read-only, textarea:read-only { background: var(--sunken); }
+input:user-invalid, select:user-invalid, textarea:user-invalid {
+  border-color: var(--ink);
+  border-width: 2px;
+  padding: 0.3rem 0.575rem;
+}
+
+input[type="checkbox"], input[type="radio"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allowed; }
+
+/* Fieldset is the card a configuration form lives in */
+fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  flex: 1 1 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--paper);
+  padding: 1rem 1.25rem;
+  margin: 0;
+  min-width: 0;
+}
+legend {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 0.4rem;
+}
+fieldset p { margin: 0; }
+
+/* Compact labels inside table rows (quota set/reset) */
+td label:has(> input:not([type="checkbox"])) { flex-direction: row; align-items: center; font-size: 0.75rem; }
+td form input[type="number"] { width: 5.5rem; }
+
+search { display: block; margin: 0.25rem 0; }
+
+/* ------------------------------------------------------------------ */
+/* Buttons — hierarchy by role, signalled through the form's action    */
+/* ------------------------------------------------------------------ */
+
+button {
+  font: inherit;
+  font-weight: 500;
+  min-height: 2.25rem;
+  padding: 0.25rem 1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+}
+button:hover { background: var(--sunken); border-color: var(--muted); }
+button:active { background: var(--sunken); transform: translateY(1px); }
+button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+/* Compact in dense contexts */
+td button, li button { min-height: 1.75rem; padding: 0.1rem 0.65rem; font-size: 0.8125rem; }
+
+/* The one strong action per context: create, save, sign in, run */
+form[action="/projects"] button[type="submit"],
+form[action$="/files/new"] button[type="submit"],
+form[action$="/versions"] button[type="submit"],
+form[action$="/triggers"] button[type="submit"],
+form[action$="/deployments"] button[type="submit"],
+form[action$="/login/go"] button[type="submit"],
+form[action="/admin/mail"] button[type="submit"],
+form[action="/admin/http"] button[type="submit"],
+form[action="/admin/logger"] button[type="submit"],
+form[action="/admin/general"] button[type="submit"],
+form[action$="/administrators/add"] button[type="submit"],
+button[formaction$="/run"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+}
+form[action="/projects"] button[type="submit"]:hover,
+form[action$="/files/new"] button[type="submit"]:hover,
+form[action$="/versions"] button[type="submit"]:hover,
+form[action$="/triggers"] button[type="submit"]:hover,
+form[action$="/deployments"] button[type="submit"]:hover,
+form[action$="/login/go"] button[type="submit"]:hover,
+form[action="/admin/mail"] button[type="submit"]:hover,
+form[action="/admin/http"] button[type="submit"]:hover,
+form[action="/admin/logger"] button[type="submit"]:hover,
+form[action="/admin/general"] button[type="submit"]:hover,
+form[action$="/administrators/add"] button[type="submit"]:hover,
+button[formaction$="/run"]:hover { opacity: 0.85; }
+
+/* Destructive: quiet until hovered, then inverts */
+form[action$="/delete"] button,
+form[action$="/remove"] button,
+form[action$="/rotate"] button {
+  background: transparent;
+  border-color: var(--border-strong);
+}
+form[action$="/delete"] button:hover,
+form[action$="/remove"] button:hover,
+form[action$="/rotate"] button:hover {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+}
+
+/* ------------------------------------------------------------------ */
+/* Status output (flash), badges (data), disclosures (details)         */
+/* ------------------------------------------------------------------ */
+
+/* Flash messages: <output> is a live status region; errors assert */
+main > output {
+  display: block;
+  margin: 0 0 1rem;
+  padding: 0.5rem 0.8rem;
+  border-radius: var(--radius);
+  background: var(--sunken);
+  font-size: 0.875rem;
+}
+output[role="alert"] {
+  background: var(--paper);
+  border-left: 3px solid var(--ink);
+  font-weight: 600;
+}
+
+/* Machine-readable badges: execution source, enabled/disabled, app name */
+data {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--muted);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+data[value="off"], data[value="disabled"] {
+  background: transparent;
+  border-color: var(--border-strong);
+}
+
+/* The create/add disclosures in rails and on the projects home page */
+summary {
+  cursor: pointer;
+  list-style: none;
+  font: inherit;
+  font-weight: 500;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--paper);
+}
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; margin-left: 0.4em; color: var(--muted); }
+summary:hover { background: var(--sunken); border-color: var(--muted); }
+details[open] > summary::after { content: "×"; }
+aside details[open] { flex-basis: 100%; }
+aside details form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+  padding: 0.25rem 0 0.5rem;
+}
+main > details { margin: 0.75rem 0 1rem; }
+main > details > summary {
+  min-height: 2.25rem;
+  padding: 0.25rem 1rem;
+  font-size: 0.875rem;
+  border-radius: var(--radius);
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+}
+main > details > summary:hover { opacity: 0.85; background: var(--ink); }
+main > details > summary::after { color: var(--on-ink); }
+main > details[open] > summary { background: transparent; color: var(--text); border-color: var(--border-strong); }
+main > details form {
+  flex-direction: column;
+  align-items: stretch;
+  max-width: 24rem;
+  padding-top: 0.75rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Lists: stat cards, deployment items                                 */
+/* ------------------------------------------------------------------ */
+
+/* Stats (overview "at a glance"): links of number + label */
+section ul { display: flex; flex-wrap: wrap; gap: 0.75rem; list-style: none; }
+section ul a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  min-width: 6rem;
+  padding: 0.9rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--sunken);
+  text-decoration: none;
+}
+section ul a:hover { border-color: var(--ink); }
+section ul a strong { font-size: 1.375rem; font-variant-numeric: tabular-nums; }
+section ul a small { font-size: 0.75rem; }
+
+/* Deployment items */
+main > ul { list-style: none; }
+main > ul li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+  padding: 0.6rem 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+main > ul li:last-child { border-bottom: none; }
+main > ul li form:first-of-type { margin-left: auto; }
+
+/* ------------------------------------------------------------------ */
+/* Run result (article) and traces (pre)                               */
+/* ------------------------------------------------------------------ */
+
+article {
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.25rem 1.25rem 1rem;
+  margin: 1rem 0;
+}
+article > h2 { margin: 0.85rem 0 0.5rem; }
+article h3 { margin: 1rem 0 0.35rem; }
+article p { margin: 0.5rem 0; }
+
+article ul { list-style: none; margin: 0.25rem 0 0.75rem; }
+article ul li {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  padding: 0.45rem 0.6rem;
+  background: var(--sunken);
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  margin-bottom: 0.3rem;
+}
+article ul li:has(> data[value="error"]) { border-left-color: var(--ink); }
+article ul li:has(> data[value="warning"]) { border-left-color: var(--border-strong); }
+article ul li > data { font-weight: 700; color: var(--text); background: var(--paper); }
+
+pre {
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  margin: 0.5rem 0 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow-x: auto;
+}
+
+/* The bytecode table is three narrow mono columns — it stays a real
+   table at every width. */
+article table:has(td strong) {
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+article table:has(td strong) thead {
+  position: static;
+  inline-size: auto;
+  block-size: auto;
+  overflow: visible;
+  clip-path: none;
+}
+article table:has(td strong) tbody { display: table-row-group; }
+article table:has(td strong) tbody tr {
+  display: table-row;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+}
+article table:has(td strong) tbody td {
+  display: table-cell;
+  padding: 0.3rem 0.6rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+article table:has(td strong) tbody td:not([data-label]) {
+  display: table-cell;
+  border-top: none;
+  padding-top: 0.3rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Files section: file rail + editor fill the available space          */
+/* ------------------------------------------------------------------ */
+
+main:has(> aside) { min-height: 0; }
+main:has(> aside) > section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* The editor is page chrome, not a card: drop the generic section
+     margin so the column fills its grid cell edge to edge. */
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: var(--bg);
+}
+main:has(> aside) form {
+  flex: 1;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0;
+  margin: 0;
+  min-height: 0;
+}
+main:has(> aside) form > header,
+main:has(> aside) > section > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.4rem 0.75rem;
+  background: var(--paper);
+  border-bottom: 1px solid var(--border);
+}
+main:has(> aside) form > header input {
+  flex: 0 1 14rem;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  min-height: 2rem;
+  padding: 0.2rem 0.55rem;
+}
+main:has(> aside) form > header small {
+  margin-left: auto;
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+main:has(> aside) > section > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.35rem 0.75rem;
+  padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
+  background: var(--paper);
+  border-top: 1px solid var(--border);
+}
+main:has(> aside) > section > footer form { margin: 0 0 0 auto; }
+main:has(> aside) textarea {
+  flex: 1;
+  min-height: 60dvh;
+  height: auto;
+  width: 100%;
+  resize: none;
+  border: none;
+  border-radius: 0;
+  background: var(--bg);
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  tab-size: 4;
+  white-space: pre;
+}
+main:has(> aside) article {
+  flex: none;
+  max-height: 45dvh;
+  overflow-y: auto;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+
+/* No file selected: center the invitation */
+main:has(> aside) > section:not(:has(textarea)) {
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 0.5rem;
+  padding: 3rem 1rem;
+}
+main:has(> aside) > section:not(:has(textarea)) > h2 { margin: 0; }
+
+/* ------------------------------------------------------------------ */
+/* 48em: the app shell — rails become independently scrolling columns  */
+/* ------------------------------------------------------------------ */
+
+@media (min-width: 48em) {
+  /* Restore the columnar table inside its scrollable box */
+  table {
+    background: var(--paper);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  thead {
+    position: static;
+    inline-size: auto;
+    block-size: auto;
+    overflow: visible;
+    clip-path: none;
+  }
+  thead th {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    text-align: left;
+    color: var(--muted);
+    background: var(--sunken);
+    padding: 0.5rem 0.75rem;
+    white-space: nowrap;
+  }
+  tbody { display: table-row-group; }
+  tbody tr {
+    display: table-row;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 0;
+  }
+  tbody tr:hover td { background: color-mix(in srgb, var(--sunken) 55%, transparent); }
+  tbody td {
+    display: table-cell;
+    vertical-align: middle;
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td[data-label] { display: table-cell; }
+  tbody td[data-label]::before { content: none; }
+  tbody td:not([data-label]) {
+    display: table-cell;
+    justify-content: initial;
+    align-items: initial;
+    margin-top: 0;
+    padding-top: 0.5rem;
+    border-top: none;
+  }
+  body:has(> aside) {
+    height: 100dvh;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+  body:has(> aside):not(:has(> aside ~ aside)) {
+    grid-template-columns: minmax(10rem, 13rem) minmax(0, 1fr);
+  }
+  body:has(> aside ~ aside) {
+    grid-template-columns: minmax(10rem, 13rem) minmax(9rem, 11rem) minmax(0, 1fr);
+  }
+  body > header { grid-column: 1 / -1; }
+  aside {
+    border-bottom: none;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    min-height: 0;
+  }
+  aside nav { flex-direction: column; flex-wrap: nowrap; gap: 0.2rem; }
+  aside nav a { border-radius: 6px; white-space: nowrap; }
+  body:has(> aside) > main { overflow-y: auto; }
+
+  /* Files section: rail + editor side by side, no page padding. The flash
+     output is conditional, so rows are placed explicitly — auto-placement
+     would put rail + editor in the auto row whenever no flash renders and
+     the editor would stop at content height instead of filling the row. */
+  body:has(> aside) > main:has(> aside) {
+    display: grid;
+    grid-template-columns: minmax(10rem, 13rem) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    padding: 0;
+    overflow: hidden;
+  }
+  main:has(> aside) > output { grid-row: 1; grid-column: 1 / -1; margin: 0.75rem 1rem 0; }
+  main:has(> aside) > aside { grid-row: 2; }
+  main:has(> aside) > section { grid-row: 2; }
+  main:has(> aside) textarea { min-height: 0; }
+  main:has(> aside) article { max-height: 45%; }
+}
+
+/* ------------------------------------------------------------------ */
+/* 80em: roomier rails and main padding                                */
+/* ------------------------------------------------------------------ */
+
+@media (min-width: 80em) {
+  body:has(> aside) > main { padding: 1.5rem 2rem 2.5rem; }
+  body:has(> aside):not(:has(> aside ~ aside)) {
+    grid-template-columns: minmax(12rem, 14rem) minmax(0, 1fr);
+  }
+  body:has(> aside ~ aside) {
+    grid-template-columns: minmax(12rem, 14rem) minmax(10rem, 12rem) minmax(0, 1fr);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Touch: keep the mobile UI feeling native                            */
+/* ------------------------------------------------------------------ */
+
+/* pointer: coarse matches finger input (phones, tablets, touch laptops)
+   and leaves mouse/trackpad rendering untouched. */
+@media (pointer: coarse) {
+  /* Safari zooms the whole viewport whenever a focused control renders
+     below 16px — hold every text-entry control at or above it. The editor
+     textarea selector repeats at its own specificity to win there too. */
+  input:not([type="checkbox"], [type="radio"], [type="hidden"]),
+  select,
+  textarea,
+  main:has(> aside) textarea {
+    font-size: max(16px, 1em);
+  }
+  /* No grey tap flash, no double-tap-zoom delay: the :hover/:active
+     states above already communicate the press. */
+  a, button, summary, select, label {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  /* 44px-grade tap targets for the primary controls and nav; the compact
+     td/li buttons keep their size (higher specificity, dense rows). */
+  button { min-height: 2.75rem; }
+  aside nav a {
+    min-height: 2.75rem;
+    padding-top: 0.35rem;
+    padding-bottom: 0.35rem;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Motion and print                                                    */
+/* ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+@media print {
+  body { background: #fff; color: #000; }
+  body > header, aside { display: none; }
+  body:has(> aside) { display: block; height: auto; overflow: visible; }
+  body:has(> aside) > main { overflow: visible; }
+  main > section, article, table { break-inside: avoid; }
+}

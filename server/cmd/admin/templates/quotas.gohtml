@@ -1,37 +1,37 @@
 {{template "top.gohtml" .}}
 
 <h1>Rate limits — {{.App}} app</h1>
-<p class="note">Default: {{.Default}} calls/minute per user. A per-user override wins when
-present; unchecking "enabled" disables the app for that user entirely.</p>
+<p><small>Default: {{.Default}} calls/minute per user. A per-user override wins when
+present; unchecking "enabled" disables the app for that user entirely.</small></p>
 
-<div class="row-form">
-  <a href="/admin/quotas?app=mail" class="btn btn-secondary btn-small">mail</a>
-  <a href="/admin/quotas?app=http" class="btn btn-secondary btn-small">http</a>
-  <a href="/admin/quotas?app=logger" class="btn btn-secondary btn-small">logger</a>
-</div>
+<nav aria-label="Apps">
+  <a href="/admin/quotas?app=mail"{{if eq .App "mail"}} aria-current="page"{{end}}>mail</a>
+  <a href="/admin/quotas?app=http"{{if eq .App "http"}} aria-current="page"{{end}}>http</a>
+  <a href="/admin/quotas?app=logger"{{if eq .App "logger"}} aria-current="page"{{end}}>logger</a>
+</nav>
 
-<table class="list">
-  <thead><tr><th>User</th><th>Override</th><th>Form</th></tr></thead>
+<table>
+  <thead><tr><th>User</th><th>Override</th><th></th></tr></thead>
   <tbody>
     {{range .Rows}}
     <tr>
-      <td>{{.User.Email}}</td>
-      <td>
-        {{with .Quota}}{{.CallsPerMinute}}/min{{if not .Enabled}} · disabled{{end}}{{else}}<span class="muted">default</span>{{end}}
+      <td data-label="User">{{.User.Email}}</td>
+      <td data-label="Override">
+        {{with .Quota}}{{.CallsPerMinute}}/min{{if not .Enabled}} · disabled{{end}}{{else}}<small>default</small>{{end}}
       </td>
       <td>
-        <form method="post" action="/admin/quotas" class="row-form">
+        <form method="post" action="/admin/quotas">
           <input type="hidden" name="userId" value="{{.User.ID}}" />
           <input type="hidden" name="app" value="{{$.App}}" />
-          <input name="callsPerMinute" type="number" min="0" placeholder="calls/min" size="10" />
-          <label class="muted"><input type="checkbox" name="enabled" checked /> enabled</label>
-          <button type="submit" class="btn btn-secondary btn-small">Set</button>
+          <label>Calls/min <input name="callsPerMinute" type="number" min="0" placeholder="calls/min" /></label>
+          <label><input type="checkbox" name="enabled" checked /> enabled</label>
+          <button type="submit">Set</button>
         </form>
         {{with .Quota}}
-        <form method="post" action="/admin/quotas/delete" class="inline-form">
+        <form method="post" action="/admin/quotas/delete">
           <input type="hidden" name="userId" value="{{.UserID}}" />
           <input type="hidden" name="app" value="{{$.App}}" />
-          <button type="submit" class="btn btn-danger btn-small">Reset</button>
+          <button type="submit">Reset</button>
         </form>
         {{end}}
       </td>

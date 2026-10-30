@@ -1,28 +1,21 @@
-<aside class="rail rail-projects">
-  <div class="rail-head">
-    <span class="rail-title">Projects</span>
-    <a href="#new-project" class="btn btn-primary btn-small">+ New</a>
-  </div>
-  <nav class="rail-list">
+<aside>
+  <header>
+    <h2>Projects</h2>
+    <details>
+      <summary>New</summary>
+      <form method="post" action="/projects">
+        <label>Name <input name="name" placeholder="project name" required /></label>
+        <label>Description <input name="description" placeholder="description (optional)" /></label>
+        <button type="submit">Create project</button>
+      </form>
+    </details>
+  </header>
+  <nav aria-label="Projects">
     {{$active := .Rail.ActiveID}}
     {{range .Rail.Projects}}
-    <a href="/projects/{{.ID}}" class="rail-link{{if eq .ID $active}} active{{end}}" title="{{.Name}}">{{.Name}}</a>
+    <a href="/projects/{{.ID}}"{{if eq .ID $active}} aria-current="page"{{end}} title="{{.Name}}">{{.Name}}</a>
     {{else}}
-    <p class="note">No projects yet.</p>
+    <p><small>No projects yet.</small></p>
     {{end}}
   </nav>
 </aside>
-
-<div class="modal" id="new-project">
-  <div class="modal-card">
-    <h2>Create project</h2>
-    <form method="post" action="/projects" class="stack-form">
-      <input name="name" placeholder="project name" required />
-      <input name="description" placeholder="description (optional)" />
-      <div class="row-actions">
-        <button type="submit" class="btn btn-primary">Create project</button>
-        <a href="#" class="btn btn-ghost">Cancel</a>
-      </div>
-    </form>
-  </div>
-</div>

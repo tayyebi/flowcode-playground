@@ -1,9 +1,14 @@
 {{template "top.gohtml" .}}
 
-<div class="empty-state">
-  <h1>FlowCode Playground</h1>
-  <p class="note">Pick a project from the rail on the left, or create one to get started.</p>
-  <p><a href="#new-project" class="btn btn-primary">+ New project</a></p>
-</div>
+<h1>FlowCode Playground</h1>
+<p><small>Pick a project from the rail above, or create one to get started.</small></p>
+<details>
+  <summary>New project</summary>
+  <form method="post" action="/projects">
+    <label>Name <input name="name" placeholder="project name" required /></label>
+    <label>Description <input name="description" placeholder="description (optional)" /></label>
+    <button type="submit">Create project</button>
+  </form>
+</details>
 
 {{template "bottom.gohtml" .}}

@@ -1,30 +1,30 @@
 {{template "top.gohtml" .}}
 
-<div class="page-head">
+<header>
   <h1>Versions</h1>
-  <span class="muted">snapshots of every file, restorable as a set</span>
-</div>
+  <small>snapshots of every file, restorable as a set</small>
+</header>
 
 {{if .CanEdit}}
-<form method="post" action="/projects/{{.P.ID}}/versions" class="row-form">
-  <input name="label" placeholder="label, e.g. v1" required />
-  <button type="submit" class="btn btn-secondary btn-small">Save version</button>
+<form method="post" action="/projects/{{.P.ID}}/versions">
+  <label>Label <input name="label" placeholder="label, e.g. v1" required /></label>
+  <button type="submit">Save version</button>
 </form>
 {{end}}
 
 {{if .Versions}}
-<table class="list">
+<table>
   <thead><tr><th>#</th><th>Label</th><th>Saved</th><th></th></tr></thead>
   <tbody>
     {{range .Versions}}
     <tr>
-      <td class="num">{{.Number}}</td>
-      <td>{{.Label}}</td>
-      <td class="muted">{{.CreatedAt}}</td>
+      <td data-label="#">{{.Number}}</td>
+      <td data-label="Label">{{.Label}}</td>
+      <td data-label="Saved"><small>{{.CreatedAt}}</small></td>
       <td>
         {{if $.CanEdit}}
-        <form method="post" action="/projects/{{$.P.ID}}/versions/{{.Number}}/restore" class="inline-form">
-          <button type="submit" class="btn btn-secondary btn-small">Restore</button>
+        <form method="post" action="/projects/{{$.P.ID}}/versions/{{.Number}}/restore">
+          <button type="submit">Restore</button>
         </form>
         {{end}}
       </td>
@@ -33,7 +33,7 @@
   </tbody>
 </table>
 {{else}}
-<p class="note">No versions saved yet.</p>
+<p><small>No versions saved yet.</small></p>
 {{end}}
 
 {{template "bottom.gohtml" .}}

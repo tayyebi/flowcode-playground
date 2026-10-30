@@ -1,22 +1,20 @@
 {{template "top.gohtml" .}}
 
 <h1>Mail app — Configuration</h1>
-<p class="note">MailApp.sendEmail hands every message to the bundled send-only
+<p><small>MailApp.sendEmail hands every message to the bundled send-only
 relay on the compose network — host <code>mailer</code>, port 25, no credentials,
 nothing to configure beyond the toggle and the sender address. The relay
 delivers straight to recipient MX servers; its DNS checklist (PTR, SPF) lives
-in the README. MailApp.read is not supported — the relay is send-only.</p>
+in the README. MailApp.read is not supported — the relay is send-only.</small></p>
 
-<form method="post" action="/admin/mail" class="card">
-  <label><input type="checkbox" name="enabled" {{if .Mail.Enabled}}checked{{end}} /> Enable the mail app</label>
-
-  <h3>MailApp.sendEmail</h3>
-  <div class="row-form">
-    <input name="from" value="{{.Mail.From}}" placeholder="from address, e.g. workflows@example.com" size="48" />
-  </div>
-  <p class="note">The envelope sender for every sendEmail call. Bounces return here.</p>
-
-  <button type="submit" class="btn btn-primary">Save mail settings</button>
+<form method="post" action="/admin/mail">
+  <fieldset>
+    <legend>Settings</legend>
+    <label><input type="checkbox" name="enabled" {{if .Mail.Enabled}}checked{{end}} /> Enable the mail app</label>
+    <label>From address <input type="email" name="from" value="{{.Mail.From}}" placeholder="workflows@example.com" autocomplete="off" /></label>
+    <p><small>The envelope sender for every sendEmail call. Bounces return here.</small></p>
+    <button type="submit">Save mail settings</button>
+  </fieldset>
 </form>
 
 {{template "bottom.gohtml" .}}

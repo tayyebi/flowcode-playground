@@ -1,29 +1,29 @@
 {{template "top.gohtml" .}}
 
-<div class="page-head">
+<header>
   <h1>Executions</h1>
-  <span class="muted">every run of this project's files, whatever started it</span>
-</div>
+  <small>every run of this project's files, whatever started it</small>
+</header>
 
 {{if .Executions}}
-<table class="list">
+<table>
   <thead><tr><th>#</th><th>File</th><th>Source</th><th>Started</th><th>Compile</th><th>Run</th><th></th></tr></thead>
   <tbody>
     {{range .Executions}}
     <tr>
-      <td class="num">{{.ID}}</td>
-      <td>{{.FileName}}</td>
-      <td><span class="tag tag-{{.Source}}">{{.Source}}</span></td>
-      <td class="muted">{{.StartedAt}}</td>
-      <td>{{with .CompileExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-      <td>{{with .RunExitCode}}<span class="num">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td data-label="#">{{.ID}}</td>
+      <td data-label="File">{{.FileName}}</td>
+      <td data-label="Source"><data value="{{.Source}}">{{.Source}}</data></td>
+      <td data-label="Started"><small>{{.StartedAt}}</small></td>
+      <td data-label="Compile">{{with .CompileExitCode}}{{.}}{{else}}<small>—</small>{{end}}</td>
+      <td data-label="Run">{{with .RunExitCode}}{{.}}{{else}}<small>—</small>{{end}}</td>
       <td><a href="/projects/{{$.P.ID}}/executions/{{.ID}}">trace</a></td>
     </tr>
     {{end}}
   </tbody>
 </table>
 {{else}}
-<p class="note">Nothing has run yet.</p>
+<p><small>Nothing has run yet.</small></p>
 {{end}}
 
 {{template "bottom.gohtml" .}}

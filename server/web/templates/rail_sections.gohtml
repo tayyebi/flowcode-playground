@@ -1,17 +1,18 @@
-<aside class="rail rail-sections">
-  <div class="rail-head">
-    <span class="rail-title" title="{{.Rail.Project.Name}}">{{.Rail.Project.Name}}</span>
-  </div>
-  <nav class="rail-list">
+<aside>
+  <header>
+    <h2 title="{{.Rail.Project.Name}}">{{.Rail.Project.Name}}</h2>
+  </header>
+  <nav aria-label="Project sections">
     {{$pid := .Rail.Project.ID}}{{$sec := .Rail.Section}}
-    <a href="/projects/{{$pid}}" class="rail-link{{if eq $sec "overview"}} active{{end}}">Overview</a>
-    <a href="/projects/{{$pid}}/files" class="rail-link{{if eq $sec "files"}} active{{end}}">Files</a>
-    <a href="/projects/{{$pid}}/versions" class="rail-link{{if eq $sec "versions"}} active{{end}}">Versions</a>
-    <a href="/projects/{{$pid}}/logs" class="rail-link{{if eq $sec "logs"}} active{{end}}">Logs</a>
-    <a href="/projects/{{$pid}}/triggers" class="rail-link{{if eq $sec "triggers"}} active{{end}}">Triggers</a>
-    <a href="/projects/{{$pid}}/executions" class="rail-link{{if eq $sec "executions"}} active{{end}}">Executions</a>
-    <div class="rail-sep"></div>
-    <a href="/projects/{{$pid}}/deployments" class="rail-link{{if eq $sec "deployments"}} active{{end}}">Deployments</a>
-    <a href="/projects/{{$pid}}/kv" class="rail-link{{if eq $sec "kv"}} active{{end}}">KV</a>
+    <a href="/projects/{{$pid}}"{{if eq $sec "overview"}} aria-current="page"{{end}}>Overview</a>
+    <a href="/projects/{{$pid}}/files"{{if eq $sec "files"}} aria-current="page"{{end}}>Files</a>
+    <a href="/projects/{{$pid}}/versions"{{if eq $sec "versions"}} aria-current="page"{{end}}>Versions</a>
+    <a href="/projects/{{$pid}}/logs"{{if eq $sec "logs"}} aria-current="page"{{end}}>Logs</a>
+    <a href="/projects/{{$pid}}/triggers"{{if eq $sec "triggers"}} aria-current="page"{{end}}>Triggers</a>
+    <a href="/projects/{{$pid}}/executions"{{if eq $sec "executions"}} aria-current="page"{{end}}>Executions</a>
+  </nav>
+  <nav aria-label="Shipping">
+    <a href="/projects/{{$pid}}/deployments"{{if eq $sec "deployments"}} aria-current="page"{{end}}>Deployments</a>
+    <a href="/projects/{{$pid}}/kv"{{if eq $sec "kv"}} aria-current="page"{{end}}>KV</a>
   </nav>
 </aside>

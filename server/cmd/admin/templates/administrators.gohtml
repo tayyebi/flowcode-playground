@@ -1,32 +1,32 @@
 {{template "top.gohtml" .}}
 
 <h1>Administrators</h1>
-<p class="note">The allowlist for this administration area. Add someone by email —
+<p><small>The allowlist for this administration area. Add someone by email —
 they sign in with the admin single sign-on on their next visit. A row's
-subject binds on first login; removing a row also kills their session.</p>
+subject binds on first login; removing a row also kills their session.</small></p>
 
-<form method="post" action="/admin/administrators/add" class="card row-form">
-  <input name="email" placeholder="admin@example.com" />
-  <input name="name" placeholder="name (optional)" />
-  <button type="submit" class="btn btn-primary">Allowlist</button>
+<form method="post" action="/admin/administrators/add">
+  <label>Email <input type="email" name="email" placeholder="admin@example.com" autocomplete="off" /></label>
+  <label>Name <input name="name" placeholder="name (optional)" /></label>
+  <button type="submit">Allowlist</button>
 </form>
 
-<table class="list">
+<table>
   <thead><tr><th>Email</th><th>Name</th><th>Added</th><th>Last login</th><th></th></tr></thead>
   <tbody>
     {{range .Admins}}
     <tr>
-      <td>{{.Email}}</td>
-      <td>{{.Name}}</td>
-      <td class="muted">{{.CreatedAt}}</td>
-      <td class="muted">{{if .Subject}}{{.LastLoginAt}}{{else}}<span class="muted">never signed in</span>{{end}}</td>
+      <td data-label="Email">{{.Email}}</td>
+      <td data-label="Name">{{.Name}}</td>
+      <td data-label="Added"><small>{{.CreatedAt}}</small></td>
+      <td data-label="Last login"><small>{{if .Subject}}{{.LastLoginAt}}{{else}}never signed in{{end}}</small></td>
       <td>
         {{if eq .ID $.CurrentAdminID}}
-        <span class="muted">you</span>
+        <small>you</small>
         {{else}}
-        <form method="post" action="/admin/administrators/remove" class="inline-form">
+        <form method="post" action="/admin/administrators/remove">
           <input type="hidden" name="id" value="{{.ID}}" />
-          <button type="submit" class="btn btn-danger btn-small">Remove</button>
+          <button type="submit">Remove</button>
         </form>
         {{end}}
       </td>

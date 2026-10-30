@@ -1,48 +1,48 @@
 {{template "top.gohtml" .}}
 
-<div class="page-head">
+<header>
   <h1>Execution #{{.Exec.ID}}</h1>
-  <span class="muted"><a href="/projects/{{.P.ID}}/executions">← all executions</a></span>
-</div>
+  <small><a href="/projects/{{.P.ID}}/executions">← all executions</a></small>
+</header>
 
-<table class="list meta">
-  <tr><th>File</th><td>{{.Exec.FileName}}</td></tr>
-  <tr><th>Source</th><td><span class="tag tag-{{.Exec.Source}}">{{.Exec.Source}}</span></td></tr>
-  <tr><th>Started</th><td>{{.Exec.StartedAt}}</td></tr>
-  <tr><th>Finished</th><td>{{.Exec.FinishedAt}}</td></tr>
-  {{with .Exec.DurationMs}}<tr><th>Duration</th><td>{{.}} ms</td></tr>{{end}}
-  {{if .Exec.TimedOut}}<tr><th></th><td class="flash flash-err">killed by the wall-clock timeout</td></tr>{{end}}
-  {{if .Exec.Error}}<tr><th>Error</th><td class="flash flash-err">{{.Exec.Error}}</td></tr>{{end}}
-</table>
+<dl>
+  <dt>File</dt><dd>{{.Exec.FileName}}</dd>
+  <dt>Source</dt><dd><data value="{{.Exec.Source}}">{{.Exec.Source}}</data></dd>
+  <dt>Started</dt><dd><small>{{.Exec.StartedAt}}</small></dd>
+  <dt>Finished</dt><dd><small>{{.Exec.FinishedAt}}</small></dd>
+  {{with .Exec.DurationMs}}<dt>Duration</dt><dd>{{.}} ms</dd>{{end}}
+  {{if .Exec.TimedOut}}<dt>Timeout</dt><dd><output role="alert">killed by the wall-clock timeout</output></dd>{{end}}
+  {{if .Exec.Error}}<dt>Error</dt><dd><output role="alert">{{.Exec.Error}}</output></dd>{{end}}
+</dl>
 
 {{if .Exec.CompileStderr}}
 <h2>Compile output</h2>
-<pre class="trace">{{.Exec.CompileStderr}}</pre>
+<pre>{{.Exec.CompileStderr}}</pre>
 {{end}}
 
 {{if .Exec.RunStderr}}
 <h2>Trace</h2>
-<pre class="trace">{{.Exec.RunStderr}}</pre>
+<pre>{{.Exec.RunStderr}}</pre>
 {{end}}
 
 {{if .AppCalls}}
-<h2>App calls <span class="muted">· the execution transcript</span></h2>
-<table class="list">
+<h2>App calls <small>· the execution transcript</small></h2>
+<table>
   <thead><tr><th>App</th><th>Status</th><th>Request</th><th>Response</th><th>Duration</th><th>When</th></tr></thead>
   <tbody>
     {{range .AppCalls}}
     <tr>
-      <td><code>{{.Name}}</code></td>
-      <td>{{.Status}}</td>
-      <td class="muted wrap">{{.Request}}</td>
-      <td class="muted wrap">{{.Response}}</td>
-      <td class="num">{{.DurationMs}} ms</td>
-      <td class="muted">{{.CreatedAt}}</td>
+      <td data-label="App"><code>{{.Name}}</code></td>
+      <td data-label="Status">{{.Status}}</td>
+      <td data-label="Request"><small>{{.Request}}</small></td>
+      <td data-label="Response"><small>{{.Response}}</small></td>
+      <td data-label="Duration">{{.DurationMs}} ms</td>
+      <td data-label="When"><small>{{.CreatedAt}}</small></td>
     </tr>
     {{end}}
   </tbody>
 </table>
-<p class="note">Logger entries are not stored here — they live in the admin-configured Loki instance.</p>
+<p><small>Logger entries are not stored here — they live in the admin-configured Loki instance.</small></p>
 {{end}}
 
 {{template "bottom.gohtml" .}}

@@ -1,42 +1,42 @@
 {{template "top.gohtml" .}}
 
-<div class="page-head">
+<header>
   <h1>Deployments</h1>
-  <span class="muted">public webhook URLs — any request runs the workflow</span>
-</div>
+  <small>public webhook URLs — any request runs the workflow</small>
+</header>
 
 {{if .CanEdit}}
-<form method="post" action="/projects/{{.P.ID}}/deployments" class="row-form">
-  <select name="fileName" required>
-    {{range .Files}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
-  </select>
-  <button type="submit" class="btn btn-secondary btn-small">Create deployment</button>
+<form method="post" action="/projects/{{.P.ID}}/deployments">
+  <label>File
+    <select name="fileName" required>
+      {{range .Files}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <button type="submit">Create deployment</button>
 </form>
 {{end}}
 
 {{if .Deployments}}
-<ul class="item-list">
+<ul>
   {{range .Deployments}}
-  <li class="item">
+  <li>
     <code><a href="/deploy/{{.Slug}}">/deploy/{{.Slug}}</a></code>
-    <span class="muted">{{.FileName}}</span>
-    <span class="tag {{if .Enabled}}tag-ok{{else}}tag-muted{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
-    <span class="item-actions">
-      {{if $.CanEdit}}
-      <form method="post" action="/projects/{{$.P.ID}}/deployments/{{.ID}}/toggle" class="inline-form">
-        <button type="submit" class="btn btn-secondary btn-small">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
-      </form>
-      <form method="post" action="/projects/{{$.P.ID}}/deployments/{{.ID}}/delete" class="inline-form">
-        <button type="submit" class="btn btn-danger btn-small">Delete</button>
-      </form>
-      {{end}}
-    </span>
+    <small>{{.FileName}}</small>
+    <data value="{{if .Enabled}}enabled{{else}}disabled{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</data>
+    {{if $.CanEdit}}
+    <form method="post" action="/projects/{{$.P.ID}}/deployments/{{.ID}}/toggle">
+      <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+    </form>
+    <form method="post" action="/projects/{{$.P.ID}}/deployments/{{.ID}}/delete">
+      <button type="submit">Delete</button>
+    </form>
+    {{end}}
   </li>
   {{end}}
 </ul>
-<p class="note">A deploy URL is the workflow's webhook: any request to it runs the workflow.</p>
+<p><small>A deploy URL is the workflow's webhook: any request to it runs the workflow.</small></p>
 {{else}}
-<p class="note">No deployments.</p>
+<p><small>No deployments.</small></p>
 {{end}}
 
 {{template "bottom.gohtml" .}}

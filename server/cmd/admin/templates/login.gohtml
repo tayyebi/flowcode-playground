@@ -2,23 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>{{.Title}} · Administration</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <!-- ?v= busts the 7-day browser cache nginx gives /static when the
+         stylesheet changes; bump it on every style.css edit. -->
+    <link rel="stylesheet" href="/static/style.css?v=6" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9881;&#65039;</text></svg>" />
   </head>
   <body>
-    <nav class="topnav">
-      <a href="/admin" class="topnav-brand">Administration</a>
-    </nav>
-    <main class="page">
-      {{if .Flash}}<p class="flash {{if .FlashOK}}flash-ok{{else}}flash-err{{end}}">{{.Flash}}</p>{{end}}
+    <header>
+      <a href="/admin"><strong>Administration</strong></a>
+    </header>
+    <main>
+      {{if .Flash}}<output{{if not .FlashOK}} role="alert"{{end}}>{{.Flash}}</output>{{end}}
 
       <h1>Administration</h1>
-      <form method="get" action="/admin/login/go" class="card login-card">
-        <p>Sign in with an allowlisted administrator account (separate
-        sign-on from the playground).</p>
-        <button type="submit" class="btn btn-primary">Continue with SSO</button>
+      <form method="get" action="/admin/login/go">
+        <fieldset>
+          <p><small>Sign in with an allowlisted administrator account (separate sign-on from the playground).</small></p>
+          <button type="submit">Continue with SSO</button>
+        </fieldset>
       </form>
 
     </main>

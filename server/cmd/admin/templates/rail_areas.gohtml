@@ -1,13 +1,14 @@
-<aside class="rail rail-areas">
-  <div class="rail-head">
-    <span class="rail-title">Admin</span>
-  </div>
-  <nav class="rail-list">
+<aside>
+  <header>
+    <h2>Admin</h2>
+  </header>
+  <nav aria-label="Apps">
     {{$area := .Rail.Area}}
-    <a href="/admin/mail" class="rail-link{{if eq $area "mail"}} active{{end}}">Mail app</a>
-    <a href="/admin/http" class="rail-link{{if eq $area "http"}} active{{end}}">HTTP app</a>
-    <a href="/admin/logger" class="rail-link{{if eq $area "logger"}} active{{end}}">Logger app</a>
-    <div class="rail-sep"></div>
-    <a href="/admin/users" class="rail-link{{if eq $area "system"}} active{{end}}">System</a>
+    <a href="/admin/mail"{{if eq $area "mail"}} aria-current="page"{{end}}>Mail app</a>
+    <a href="/admin/http"{{if eq $area "http"}} aria-current="page"{{end}}>HTTP app</a>
+    <a href="/admin/logger"{{if eq $area "logger"}} aria-current="page"{{end}}>Logger app</a>
+  </nav>
+  <nav aria-label="System">
+    <a href="/admin/users"{{if eq $area "system"}} aria-current="page"{{end}}>System</a>
   </nav>
 </aside>

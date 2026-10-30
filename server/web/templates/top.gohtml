@@ -2,31 +2,29 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>{{.Title}} · FlowCode Playground</title>
     <!-- ?v= busts the 7-day browser cache nginx gives /static when the
          stylesheet changes; bump it on every style.css edit. -->
-    <link rel="stylesheet" href="/static/style.css?v=2" />
+    <link rel="stylesheet" href="/static/style.css?v=6" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9193;</text></svg>" />
   </head>
-  <body{{if .Rail}} class="app"{{end}}>
-    <nav class="topnav">
-      <a href="/projects" class="topnav-brand">FlowCode Playground</a>
-      <span class="spacer"></span>
+  <body>
+    <header>
+      <a href="/projects"><strong>FlowCode Playground</strong></a>
       {{with .User}}
-      <span class="muted">{{.Email}}</span>
-      <form method="post" action="/logout" class="inline-form">
-        <button type="submit" class="btn btn-ghost">Log out</button>
+      <small>{{.Email}}</small>
+      <form method="post" action="/logout">
+        <button type="submit">Log out</button>
       </form>
       {{end}}
-    </nav>
+    </header>
     {{if .Rail}}
-    <div class="app-body">
       {{template "rail_projects.gohtml" .}}
       {{if .Rail.Project}}{{template "rail_sections.gohtml" .}}{{end}}
-      <main class="app-main{{if eq .Rail.Section "files"}} app-main-fill{{end}}">
-        {{if .Flash}}<p class="flash {{if .FlashOK}}flash-ok{{else}}flash-err{{end}}">{{.Flash}}</p>{{end}}
+      <main>
+        {{if .Flash}}<output{{if not .FlashOK}} role="alert"{{end}}>{{.Flash}}</output>{{end}}
     {{else}}
-    <main class="page">
-      {{if .Flash}}<p class="flash {{if .FlashOK}}flash-ok{{else}}flash-err{{end}}">{{.Flash}}</p>{{end}}
+      <main>
+        {{if .Flash}}<output{{if not .FlashOK}} role="alert"{{end}}>{{.Flash}}</output>{{end}}
     {{end}}
